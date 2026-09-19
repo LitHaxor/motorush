@@ -1,4 +1,4 @@
-# RoadBrush
+# MotoRush
 
 A Road Rash–style arcade motorcycle combat racer, built with **Three.js**,
 **TypeScript** and **Vite**. Eight riders, public roads, and no rules worth

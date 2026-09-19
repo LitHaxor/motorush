@@ -66,7 +66,7 @@ export async function loadFoliageAtlas(): Promise<FoliageAtlas> {
     try {
       return await loadCutout(a, b);
     } catch (err) {
-      console.warn('[roadbrush] foliage atlas unavailable', err);
+      console.warn('[motorush] foliage atlas unavailable', err);
       return null;
     }
   };

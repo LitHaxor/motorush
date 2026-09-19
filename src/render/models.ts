@@ -159,7 +159,7 @@ export async function loadModels(): Promise<ModelLibrary> {
       },
     };
   } catch (err) {
-    console.warn('[roadbrush] glTF props unavailable, falling back to primitives', err);
+    console.warn('[motorush] glTF props unavailable, falling back to primitives', err);
     return empty;
   }
 }

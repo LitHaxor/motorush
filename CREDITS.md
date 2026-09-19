@@ -1,6 +1,6 @@
 # Credits
 
-RoadBrush uses only CC0 / public-domain assets. Nothing here requires
+MotoRush uses only CC0 / public-domain assets. Nothing here requires
 attribution, but the sources deserve it anyway.
 
 ## Textures

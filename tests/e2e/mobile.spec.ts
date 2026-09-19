@@ -17,7 +17,7 @@ test.describe('mobile', () => {
     const gas = page.locator('[data-touch="throttle"]');
     const before = (await worldState(page)).speed;
     await gas.dispatchEvent('pointerdown');
-    await page.waitForFunction((v) => window.roadbrush!.world()!.player.speed > v + 1, before);
+    await page.waitForFunction((v) => window.motorush!.world()!.player.speed > v + 1, before);
     await gas.dispatchEvent('pointerup');
     const after = (await worldState(page)).speed;
     expect(after).toBeGreaterThan(before);

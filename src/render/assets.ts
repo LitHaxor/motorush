@@ -105,7 +105,7 @@ export async function loadGroundTextures(
       },
     };
   } catch (err) {
-    console.warn('[roadbrush] PBR textures unavailable, using procedural ground', err);
+    console.warn('[motorush] PBR textures unavailable, using procedural ground', err);
     return fallback(grass, grassAccent);
   }
 }

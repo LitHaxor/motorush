@@ -1,9 +1,9 @@
 {
-  "name": "roadbrush",
+  "name": "motorush",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "RoadBrush - a Road Rash style arcade motorcycle combat racer built with Three.js",
+  "description": "MotoRush - a Road Rash style arcade motorcycle combat racer built with Three.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

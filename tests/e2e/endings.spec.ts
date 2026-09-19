@@ -8,10 +8,10 @@ test.describe('end screens', () => {
 
     // Put the player on the line rather than riding the whole 5 km.
     await page.evaluate(() => {
-      const w = window.roadbrush!.world()!;
+      const w = window.motorush!.world()!;
       w.player.s = w.raceDistance - 4;
     });
-    await page.evaluate(() => window.roadbrush!.fastForward(3, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(3, { throttle: 1 }));
 
     await expect(page.locator('#screen-finish')).toBeVisible();
     await expect(page.locator('#hud')).toBeHidden();
@@ -27,12 +27,12 @@ test.describe('end screens', () => {
     await gotoGame(page);
     await startRace(page, { seed: 556 });
     await page.evaluate(() => {
-      const w = window.roadbrush!.world()!;
+      const w = window.motorush!.world()!;
       // Player on the line, everyone else left behind.
       w.player.s = w.raceDistance - 3;
       for (const r of w.rivals) r.s = 100;
     });
-    await page.evaluate(() => window.roadbrush!.fastForward(3, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(3, { throttle: 1 }));
 
     await expect(page.locator('#screen-finish')).toBeVisible();
     await expect(page.locator('#finish-stamp')).toHaveText('1ST');
@@ -44,9 +44,9 @@ test.describe('end screens', () => {
     await gotoGame(page);
     await startRace(page, { seed: 557 });
     await page.evaluate(() => {
-      window.roadbrush!.world()!.player.health = 0;
+      window.motorush!.world()!.player.health = 0;
     });
-    await page.evaluate(() => window.roadbrush!.fastForward(0.5, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(0.5, { throttle: 1 }));
 
     await expect(page.locator('#screen-wasted')).toBeVisible();
     await expect(page.locator('#screen-wasted .verdict__stamp')).toHaveText('WASTED');
@@ -61,7 +61,7 @@ test.describe('end screens', () => {
     // Send a patrol, then put the rider on the tarmac in front of them. The
     // arrest lands when they pick the bike back up.
     await page.evaluate(() => {
-      const api = window.roadbrush!;
+      const api = window.motorush!;
       const w = api.world()!;
       const cop = w.spawnCop();
       // Put a car head-on in front of them: a real crash, through the real
@@ -95,7 +95,7 @@ test.describe('end screens', () => {
     await startRace(page, { seed: 562 });
 
     await page.evaluate(() => {
-      const api = window.roadbrush!;
+      const api = window.motorush!;
       const w = api.world()!;
       const cop = w.spawnCop();
       for (let i = 0; i < 40 && api.mode() === 'racing'; i++) {
@@ -120,10 +120,10 @@ test.describe('end screens', () => {
     await expect(page.locator('#hud-pursuit')).toBeHidden();
 
     await page.evaluate(() => {
-      const w = window.roadbrush!.world()!;
+      const w = window.motorush!.world()!;
       w.spawnCop();
     });
-    await page.evaluate(() => window.roadbrush!.fastForward(0.4, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(0.4, { throttle: 1 }));
     await page.waitForTimeout(250);
     await expect(page.locator('#hud-pursuit')).toBeVisible();
     await expect(page.locator('.pursuit__title')).toContainText(/highway patrol/i);
@@ -133,13 +133,13 @@ test.describe('end screens', () => {
     await gotoGame(page);
     await startRace(page, { seed: 560 });
     await page.evaluate(() => {
-      window.roadbrush!.world()!.player.health = 0;
+      window.motorush!.world()!.player.health = 0;
     });
-    await page.evaluate(() => window.roadbrush!.fastForward(0.5, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(0.5, { throttle: 1 }));
     await expect(page.locator('#screen-wasted')).toBeVisible();
 
     await page.locator('#screen-wasted').getByRole('button', { name: /ride again/i }).click();
-    await page.waitForFunction(() => window.roadbrush?.mode() === 'racing', null, { timeout: 20_000 });
+    await page.waitForFunction(() => window.motorush?.mode() === 'racing', null, { timeout: 20_000 });
     await expect(page.locator('#screen-wasted')).toBeHidden();
     await expect(page.locator('#hud')).toBeVisible();
     const s = await worldState(page);
@@ -151,9 +151,9 @@ test.describe('end screens', () => {
     await gotoGame(page);
     await startRace(page, { seed: 561 });
     await page.evaluate(() => {
-      window.roadbrush!.world()!.player.health = 0;
+      window.motorush!.world()!.player.health = 0;
     });
-    await page.evaluate(() => window.roadbrush!.fastForward(0.5, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(0.5, { throttle: 1 }));
     await page.locator('#screen-wasted').getByRole('button', { name: /main menu/i }).click();
     await expect(page.locator('#screen-splash')).toBeVisible();
   });

@@ -7,17 +7,17 @@ test.describe('racing', () => {
     await page.fill('#rider-name', 'CLAUDE');
     await page.getByRole('button', { name: /twist the throttle/i }).click();
 
-    await page.waitForFunction(() => window.roadbrush?.mode() === 'racing', null, { timeout: 20_000 });
+    await page.waitForFunction(() => window.motorush?.mode() === 'racing', null, { timeout: 20_000 });
     await expect(page.locator('#hud')).toBeVisible();
     await expect(page.locator('#screen-splash')).toBeHidden();
 
     // The name carries into the race.
-    const name = await page.evaluate(() => window.roadbrush!.world()!.player.name);
+    const name = await page.evaluate(() => window.motorush!.world()!.player.name);
     expect(name).toBe('CLAUDE');
 
     // Countdown first, then green.
     expect((await worldState(page)).state).toBe('countdown');
-    await page.evaluate(() => window.roadbrush!.fastForward(4));
+    await page.evaluate(() => window.motorush!.fastForward(4));
     expect((await worldState(page)).state).toBe('racing');
   });
 
@@ -29,7 +29,7 @@ test.describe('racing', () => {
     expect(before.racers).toBe(8);
     expect(before.distance).toBeLessThan(50);
 
-    await page.evaluate(() => window.roadbrush!.fastForward(8, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(8, { throttle: 1 }));
     const after = await worldState(page);
     expect(after.distance).toBeGreaterThan(before.distance + 100);
     expect(after.elapsed).toBeGreaterThan(before.elapsed);
@@ -38,7 +38,7 @@ test.describe('racing', () => {
   test('HUD reflects speed, position and distance', async ({ page }) => {
     await gotoGame(page);
     await startRace(page, { seed: 99 });
-    await page.evaluate(() => window.roadbrush!.fastForward(6, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(6, { throttle: 1 }));
     // Wait for a render frame to push the values into the DOM, however long
     // that takes on a software renderer.
     await page.waitForFunction(() => Number(document.getElementById('hud-speed')!.textContent) > 0);
@@ -54,11 +54,11 @@ test.describe('racing', () => {
   test('pause halts the clock and resume continues it', async ({ page }) => {
     await gotoGame(page);
     await startRace(page, { seed: 7 });
-    await page.evaluate(() => window.roadbrush!.fastForward(3, { throttle: 1 }));
+    await page.evaluate(() => window.motorush!.fastForward(3, { throttle: 1 }));
 
     await page.keyboard.press('Escape');
     await expect(page.locator('#screen-pause')).toBeVisible();
-    expect(await page.evaluate(() => window.roadbrush!.mode())).toBe('paused');
+    expect(await page.evaluate(() => window.motorush!.mode())).toBe('paused');
 
     const paused = await worldState(page);
     await page.waitForTimeout(600);
@@ -67,7 +67,7 @@ test.describe('racing', () => {
 
     await page.getByRole('button', { name: /^resume$/i }).click();
     await expect(page.locator('#screen-pause')).toBeHidden();
-    expect(await page.evaluate(() => window.roadbrush!.mode())).toBe('racing');
+    expect(await page.evaluate(() => window.motorush!.mode())).toBe('racing');
   });
 
   test('quitting from pause returns to the menu', async ({ page }) => {
@@ -77,7 +77,7 @@ test.describe('racing', () => {
     await page.getByRole('button', { name: /quit to menu/i }).click();
     await expect(page.locator('#screen-splash')).toBeVisible();
     await expect(page.locator('#hud')).toBeHidden();
-    expect(await page.evaluate(() => window.roadbrush!.mode())).toBe('menu');
+    expect(await page.evaluate(() => window.motorush!.mode())).toBe('menu');
   });
 
   test('the same seed builds the same race', async ({ page }) => {
@@ -88,7 +88,7 @@ test.describe('racing', () => {
     const fingerprint = async (seed: number) => {
       await startRace(page, { seed });
       const fp = await page.evaluate(() => {
-        const w = window.roadbrush!.world()!;
+        const w = window.motorush!.world()!;
         const samples: number[] = [];
         for (let s = 0; s < 4000; s += 250) {
           const pt = w.track.toWorld(s, 0);
@@ -101,7 +101,7 @@ test.describe('racing', () => {
           raceDistance: w.raceDistance,
         };
       });
-      await page.evaluate(() => window.roadbrush!.quit());
+      await page.evaluate(() => window.motorush!.quit());
       return fp;
     };
 

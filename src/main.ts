@@ -19,7 +19,7 @@ const MAX_SUBSTEPS = 5;
 type Mode = 'boot' | 'menu' | 'racing' | 'paused' | 'over';
 
 /** Small surface used by the end-to-end tests to drive the game headlessly. */
-export interface RoadbrushApi {
+export interface MotorushApi {
   mode(): Mode;
   world(): World | null;
   start(opts?: Partial<StartOptions> & { seed?: number }): void;
@@ -30,11 +30,13 @@ export interface RoadbrushApi {
   /** Advance the simulation without waiting for real time to pass. */
   fastForward(seconds: number, input?: Partial<RacerInput>): void;
   ready(): boolean;
+  /** Dev builds only: the renderer, for profiling draw load from the console. */
+  view?(): GameView | null;
 }
 
 declare global {
   interface Window {
-    roadbrush?: RoadbrushApi;
+    motorush?: MotorushApi;
   }
 }
 
@@ -83,7 +85,7 @@ class Game {
     try {
       this.view = await GameView.create(this.canvas, this.world);
     } catch (err) {
-      console.error('[roadbrush] failed to start the renderer', err);
+      console.error('[motorush] failed to start the renderer', err);
       this.screens.setLoadingText('WEBGL UNAVAILABLE — TRY ANOTHER BROWSER');
       return;
     }
@@ -248,7 +250,7 @@ class Game {
   }
 
   // ------------------------------------------------------------- test hooks
-  api(): RoadbrushApi {
+  api(): MotorushApi {
     return {
       mode: () => this.mode,
       world: () => this.world,
@@ -258,6 +260,9 @@ class Game {
       pause: () => this.pause(),
       resume: () => this.resume(),
       ready: () => this.view !== null,
+      // Dev-only handle on the renderer, for profiling draw load from the
+      // console. Stripped from production builds.
+      ...(import.meta.env.DEV ? { view: () => this.view } : {}),
       fastForward: (seconds, input) => {
         const full: RacerInput = {
           throttle: 1, brake: 0, steer: 0, attackLeft: false, attackRight: false, ...input,
@@ -283,6 +288,6 @@ class Game {
 const canvas = document.getElementById('stage') as HTMLCanvasElement | null;
 if (canvas) {
   const game = new Game(canvas);
-  window.roadbrush = game.api();
+  window.motorush = game.api();
   void game.boot();
 }

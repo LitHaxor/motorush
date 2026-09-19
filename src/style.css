@@ -1,4 +1,4 @@
-/* RoadBrush UI — dark chrome, hot orange, heavy condensed type.
+/* MotoRush UI — dark chrome, hot orange, heavy condensed type.
    Modern take on the 90s arcade racer look. */
 
 :root {
@@ -263,8 +263,8 @@ button { font-family: inherit; cursor: pointer; }
   font-size: clamp(50px, 13vw, 122px); line-height: 0.84; letter-spacing: -0.045em;
   text-transform: uppercase;
 }
-.logo__road { color: var(--ink); text-shadow: 0 6px 0 rgba(0,0,0,0.5); }
-.logo__brush {
+.logo__moto { color: var(--ink); text-shadow: 0 6px 0 rgba(0,0,0,0.5); }
+.logo__rush {
   color: var(--hot);
   text-shadow: 0 6px 0 rgba(0,0,0,0.5), 0 0 60px rgba(255,90,31,0.65);
 }

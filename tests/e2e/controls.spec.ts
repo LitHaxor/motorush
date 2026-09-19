@@ -8,7 +8,7 @@ test.describe('controls', () => {
 
     const before = (await worldState(page)).speed;
     await page.keyboard.down('KeyW');
-    await page.waitForFunction((v) => window.roadbrush!.world()!.player.speed > v + 1, before);
+    await page.waitForFunction((v) => window.motorush!.world()!.player.speed > v + 1, before);
     await page.keyboard.up('KeyW');
     const after = (await worldState(page)).speed;
     expect(after).toBeGreaterThan(before);
@@ -22,7 +22,7 @@ test.describe('controls', () => {
     // lying on the tarmac after hitting traffic, and a downed bike does not
     // steer - which would make this test about crash handling, not steering.
     await page.evaluate(() => {
-      const w = window.roadbrush!.world()!;
+      const w = window.motorush!.world()!;
       const p = w.player;
       p.state = 'ride';
       p.downTimer = 0;
@@ -33,20 +33,20 @@ test.describe('controls', () => {
       for (const car of w.traffic.cars) car.s = p.s + 400;
     });
 
-    const before = await page.evaluate(() => window.roadbrush!.world()!.player.lateral);
+    const before = await page.evaluate(() => window.motorush!.world()!.player.lateral);
 
     // Poll for the effect rather than sleeping: headless software WebGL runs
     // the frame loop slowly, so a fixed wait measures framerate, not steering.
     await page.keyboard.down('KeyD');
     await page.waitForFunction(
-      (start) => window.roadbrush!.world()!.player.lateral > start + 0.2,
+      (start) => window.motorush!.world()!.player.lateral > start + 0.2,
       before,
     );
     await page.keyboard.up('KeyD');
 
     const after = await page.evaluate(() => ({
-      lateral: window.roadbrush!.world()!.player.lateral,
-      state: window.roadbrush!.world()!.player.state,
+      lateral: window.motorush!.world()!.player.lateral,
+      state: window.motorush!.world()!.player.state,
     }));
     expect(after.state).toBe('ride');
     expect(after.lateral).toBeGreaterThan(before);
@@ -54,7 +54,7 @@ test.describe('controls', () => {
     // And the other way.
     await page.keyboard.down('KeyA');
     await page.waitForFunction(
-      (peak) => window.roadbrush!.world()!.player.lateral < peak - 0.2,
+      (peak) => window.motorush!.world()!.player.lateral < peak - 0.2,
       after.lateral,
     );
     await page.keyboard.up('KeyA');
@@ -65,7 +65,7 @@ test.describe('controls', () => {
     await startRace(page, { seed: 13 });
     // Deterministic: step the simulation directly instead of racing the clock.
     const moved = await page.evaluate(() => {
-      const api = window.roadbrush!;
+      const api = window.motorush!;
       const w = api.world()!;
       const p = w.player;
       p.state = 'ride'; p.downTimer = 0; p.s = 30; p.lateral = -4; p.speed = 50;
@@ -83,7 +83,7 @@ test.describe('controls', () => {
     await startRace(page, { seed: 14 });
 
     const damaged = await page.evaluate(() => {
-      const api = window.roadbrush!;
+      const api = window.motorush!;
       const w = api.world()!;
       const victim = w.rivals[0];
       victim.state = 'ride';

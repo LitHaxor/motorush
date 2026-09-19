@@ -11,7 +11,7 @@ test.describe('boot and menu', () => {
 
     await gotoGame(page);
 
-    await expect(page).toHaveTitle(/RoadBrush/i);
+    await expect(page).toHaveTitle(/MotoRush/i);
     await expect(page.locator('#screen-splash')).toBeVisible();
     await expect(page.getByRole('button', { name: /twist the throttle/i })).toBeVisible();
     // HUD stays out of the way until a race starts.
