@@ -1,5 +1,25 @@
 import { describe, it, expect } from 'vitest';
 import { Track } from '../../src/sim/track';
+import { buildBiomes, buildRoadLayout } from '../../src/sim/biomes';
+import { makeRng } from '../../src/sim/mathx';
+
+const LAYOUT_OPTS = {
+  medianHalfWidth: TRACK.medianHalfWidth,
+  forkHalfWidth: TRACK.forkHalfWidth,
+  forkChance: TRACK.forkChance,
+  medianLength: TRACK.medianLength,
+  forkLength: TRACK.forkLength,
+  gap: TRACK.medianGap,
+  cityMargin: TRACK.splitBiomeMargin,
+};
+
+/** Build a track the way the World does: biomes, then layout, then track. */
+function laidOut(seed: number, length: number) {
+  const rng = makeRng(seed);
+  const biomes = buildBiomes(length, rng);
+  const divided = buildRoadLayout(length, rng, biomes, LAYOUT_OPTS);
+  return { track: new Track({ seed, length, biomes, divided }), biomes, divided };
+}
 import { TRACK } from '../../src/sim/config';
 
 describe('Track', () => {
@@ -116,7 +136,7 @@ describe('Track: beyond the baked range', () => {
 
 describe('Track: divided sections', () => {
   it('lays out ordered divided stretches', () => {
-    const t = new Track({ seed: 12, length: 9000 });
+    const t = laidOut(12, 9000).track;
     expect(t.divided.length).toBeGreaterThan(0);
     for (let i = 0; i < t.divided.length; i++) {
       expect(t.divided[i].to).toBeGreaterThan(t.divided[i].from);
@@ -125,15 +145,23 @@ describe('Track: divided sections', () => {
   });
 
   it('has no median on an undivided stretch', () => {
-    const t = new Track({ seed: 12, length: 9000 });
+    const t = laidOut(12, 9000).track;
     // Well before the first divided section there is nothing in the middle.
     expect(t.medianAt(0)).toBe(0);
     expect(t.isOffRoad(0, 0)).toBe(false);
   });
 
+  const narrowSection = () => {
+    for (let seed = 1; seed < 80; seed++) {
+      const t = laidOut(seed, 16000).track;
+      const seg = t.divided.find((d) => !d.fork);
+      if (seg) return { t, seg };
+    }
+    throw new Error('no narrow median generated');
+  };
+
   it('opens the median gradually rather than under your wheels', () => {
-    const t = new Track({ seed: 12, length: 9000 });
-    const seg = t.divided[0];
+    const { t, seg } = narrowSection();
     const outside = t.medianAt(seg.from - 200);
     const edge = t.medianAt(seg.from - 40);
     const middle = t.medianAt((seg.from + seg.to) / 2);
@@ -147,7 +175,7 @@ describe('Track: divided sections', () => {
     // Riding the centre line into a divided section used to drop the bike to
     // off-road grip the instant the median existed at all, which reads as the
     // bike breaking rather than as running onto a verge.
-    const t = new Track({ seed: 12, length: 9000 });
+    const t = laidOut(12, 9000).track;
     const seg = t.divided[0];
     for (let s = seg.from - TRACK.medianRamp; s < seg.from - 20; s += 5) {
       if (t.medianAt(s) >= TRACK.medianMinEffective) break;
@@ -156,7 +184,7 @@ describe('Track: divided sections', () => {
   });
 
   it('forgives clipping the edge of the median', () => {
-    const t = new Track({ seed: 12, length: 9000 });
+    const t = laidOut(12, 9000).track;
     const mid = (t.divided[0].from + t.divided[0].to) / 2;
     const median = t.medianAt(mid);
     // Just inside the painted edge is still fine...
@@ -166,8 +194,8 @@ describe('Track: divided sections', () => {
   });
 
   it('makes the centre of a divided road undrivable but not fatal', () => {
-    const t = new Track({ seed: 12, length: 9000 });
-    const mid = (t.divided[0].from + t.divided[0].to) / 2;
+    const { t, seg } = narrowSection();
+    const mid = (seg.from + seg.to) / 2;
     // Straddling the middle is grass, so it costs speed...
     expect(t.isOffRoad(0, mid)).toBe(true);
     // ...but it is not a barrier strike; you can steer out of it.
@@ -178,8 +206,8 @@ describe('Track: divided sections', () => {
   });
 
   it('leaves every traffic lane drivable through a divided section', () => {
-    const t = new Track({ seed: 12, length: 9000 });
-    const mid = (t.divided[0].from + t.divided[0].to) / 2;
+    const { t, seg } = narrowSection();
+    const mid = (seg.from + seg.to) / 2;
     for (const lane of TRACK.laneCentres) {
       expect(t.isOffRoad(lane, mid)).toBe(false);
     }
@@ -214,7 +242,7 @@ describe('Track: coast levelling', () => {
 describe('Track: forks', () => {
   const forked = () => {
     for (let seed = 1; seed < 60; seed++) {
-      const t = new Track({ seed, length: 12000 });
+      const t = laidOut(seed, 12000).track;
       const fork = t.divided.find((d) => d.fork);
       if (fork) return { t, fork };
     }
@@ -283,7 +311,7 @@ describe('Track: forks', () => {
 describe('Track: committing to a fork', () => {
   const forked = () => {
     for (let seed = 1; seed < 60; seed++) {
-      const t = new Track({ seed, length: 16000 });
+      const t = laidOut(seed, 16000).track;
       const fork = t.divided.find((d) => d.fork);
       if (fork) return { t, fork };
     }
@@ -295,21 +323,21 @@ describe('Track: committing to a fork', () => {
     expect(fork.to - fork.from).toBeGreaterThanOrEqual(TRACK.forkLength[0]);
   });
 
-  it('leaves no way across once the island is open', () => {
+  it('offers no designed way across, but does not wall you in either', () => {
     const { t, fork } = forked();
     const mid = (fork.from + fork.to) / 2;
-    // Riding into the island is a barrier strike, not a slow patch of grass.
-    expect(t.isOutOfBounds(0, mid)).toBe(true);
-    expect(t.isOutOfBounds(1, mid)).toBe(true);
-    // Both routes remain perfectly safe.
+    // The island is grass: crossing costs you speed, not the race.
+    expect(t.isOffRoad(0, mid)).toBe(true);
+    expect(t.isOutOfBounds(0, mid)).toBe(false);
+    // Both routes remain perfectly good tarmac.
     const route = t.medianAt(mid) + t.halfWidth / 2;
-    expect(t.isOutOfBounds(route, mid)).toBe(false);
-    expect(t.isOutOfBounds(-route, mid)).toBe(false);
+    expect(t.isOffRoad(route, mid)).toBe(false);
+    expect(t.isOffRoad(-route, mid)).toBe(false);
   });
 
   it('keeps a narrow median survivable', () => {
     for (let seed = 1; seed < 60; seed++) {
-      const t = new Track({ seed, length: 16000 });
+      const t = laidOut(seed, 16000).track;
       const narrow = t.divided.find((d) => !d.fork);
       if (!narrow) continue;
       const mid = (narrow.from + narrow.to) / 2;
@@ -321,9 +349,9 @@ describe('Track: committing to a fork', () => {
     throw new Error('no narrow median generated');
   });
 
-  it('is passable again as the island closes', () => {
+  it('is plain tarmac again once the road rejoins', () => {
     const { t, fork } = forked();
-    expect(t.isOutOfBounds(0, fork.from - TRACK.medianRamp - 20)).toBe(false);
-    expect(t.isOutOfBounds(0, fork.to + TRACK.medianRamp + 20)).toBe(false);
+    expect(t.isOffRoad(0, fork.from - TRACK.medianRamp - 20)).toBe(false);
+    expect(t.isOffRoad(0, fork.to + TRACK.medianRamp + 20)).toBe(false);
   });
 });

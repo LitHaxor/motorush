@@ -13,7 +13,10 @@ import { resolveSwings, startAttack, canAttack } from './combat';
 import { TrafficSystem, collideWithTraffic, collideRacers } from './traffic';
 import { generatePickups, collectPickups } from './pickups';
 import { aiInput, createAiState, type AiWorldView } from './ai';
-import { buildBiomes, citySegments, type BiomeSegment, type CitySegment } from './biomes';
+import {
+  buildBiomes, buildRoadLayout, citySegments,
+  type BiomeSegment, type CitySegment, type DividedSection,
+} from './biomes';
 import { generatePedestrians, stepPedestrians, type Crossing, type Pedestrian } from './pedestrians';
 import type {
   DifficultyKey,
@@ -55,6 +58,7 @@ export class World implements AiWorldView {
   readonly traffic: TrafficSystem;
   readonly pickups: Pickup[];
   readonly biomes: BiomeSegment[];
+  readonly divided: DividedSection[];
   readonly citySegments: CitySegment[];
   readonly crossings: Crossing[];
   readonly pedestrians: Pedestrian[];
@@ -94,7 +98,23 @@ export class World implements AiWorldView {
     // needs to know where they are before it bakes its elevation.
     const trackLength = this.raceDistance + TRACK.runout;
     this.biomes = buildBiomes(trackLength, this.rng);
-    this.track = new Track({ seed, length: trackLength, biomes: this.biomes });
+    // Road layout next: a split that starts in a biome stretches that biome to
+    // cover the whole thing, so this has to happen before the track bakes.
+    this.divided = buildRoadLayout(trackLength, this.rng, this.biomes, {
+      medianHalfWidth: TRACK.medianHalfWidth,
+      forkHalfWidth: TRACK.forkHalfWidth,
+      forkChance: TRACK.forkChance,
+      medianLength: TRACK.medianLength,
+      forkLength: TRACK.forkLength,
+      gap: TRACK.medianGap,
+      cityMargin: TRACK.splitBiomeMargin,
+    });
+    this.track = new Track({
+      seed,
+      length: trackLength,
+      biomes: this.biomes,
+      divided: this.divided,
+    });
     this.traffic = new TrafficSystem(this.track, this.rng, { density: preset.traffic });
     this.pickups = generatePickups(this.track, this.rng, this.raceDistance);
     this.citySegments = citySegments(this.biomes);

@@ -5,7 +5,7 @@ import { createRacer } from '../../src/sim/racer';
 import { generatePickups, collectPickups, PICKUP_TYPES } from '../../src/sim/pickups';
 import { PICKUPS, TRACK, COMBAT, BIKE } from '../../src/sim/config';
 
-const track = new Track({ seed: 8, length: 3000, divided: false });
+const track = new Track({ seed: 8, length: 3000 });
 
 describe('pickups', () => {
   it('spreads pickups along the track, on the tarmac, before the line', () => {

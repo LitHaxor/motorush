@@ -20,6 +20,9 @@ export const PED = {
   activeRange: 260,
   /** People lining the verge at the start line. */
   startCrowd: 22,
+  /** Pedestrians per 100 m of city pavement, each side. */
+  walkersPer100m: 2.2,
+  strollSpeed: [0.9, 1.6] as [number, number],
   /** Hit box, metres. */
   hitLength: 1.1,
   hitWidth: 0.9,
@@ -31,7 +34,7 @@ export const PED = {
 };
 
 /** Crossers walk over the road; spectators line the verge and cheer. */
-export type PedestrianKind = 'crosser' | 'spectator' | 'marshal';
+export type PedestrianKind = 'crosser' | 'spectator' | 'marshal' | 'walker';
 
 export interface Pedestrian {
   id: number;
@@ -43,7 +46,7 @@ export interface Pedestrian {
   height: number;
   dir: 1 | -1;
   speed: number;
-  state: 'walking' | 'waiting' | 'cheering' | 'flying' | 'down';
+  state: 'walking' | 'waiting' | 'cheering' | 'strolling' | 'flying' | 'down';
   timer: number;
   /** Launch velocity, set when they get hit. */
   velLateral: number;
@@ -54,6 +57,11 @@ export interface Pedestrian {
   colour: number;
   /** The kerb-to-kerb extent of their crossing. */
   span: number;
+  /** Walkers only: which way along the pavement they are headed. */
+  along: 1 | -1;
+  /** Walkers only: the stretch of pavement they patrol. */
+  minS: number;
+  maxS: number;
 }
 
 export interface Crossing {
@@ -108,6 +116,9 @@ export function generatePedestrians(
           spinRate: 0,
           colour: rng.pick(PED_COLOURS),
           span,
+          along: 1,
+          minS: 0,
+          maxS: 0,
         });
       }
       s += rng.range(PED.crossingSpacing[0], PED.crossingSpacing[1]);
@@ -138,7 +149,44 @@ export function generatePedestrians(
       spinRate: 0,
       colour: rng.pick(PED_COLOURS),
       span: verge + 4,
+      along: 1,
+      minS: 0,
+      maxS: 0,
     });
+  }
+
+  // --- city pavements ------------------------------------------------------
+  // People going about their business on both pavements. They stay on the
+  // kerb, so you only hit one if you leave the road.
+  const pavement = TRACK.halfWidth + TRACK.shoulder + 2.2;
+  for (const seg of citySpans) {
+    const count = Math.round(((seg.to - seg.from) / 100) * PED.walkersPer100m);
+    for (let i = 0; i < count; i++) {
+      for (const side of [-1, 1] as const) {
+        const along: 1 | -1 = rng.chance(0.5) ? 1 : -1;
+        pedestrians.push({
+          id: id++,
+          kind: 'walker',
+          s: rng.range(seg.from, seg.to),
+          lateral: side * (pavement + rng.range(0, 2.4)),
+          height: 0,
+          dir: side,
+          speed: rng.range(PED.strollSpeed[0], PED.strollSpeed[1]),
+          state: 'strolling',
+          timer: rng() * Math.PI * 2,
+          velLateral: 0,
+          velUp: 0,
+          velAlong: 0,
+          spin: 0,
+          spinRate: 0,
+          colour: rng.pick(PED_COLOURS),
+          span: pavement + 4,
+          along,
+          minS: seg.from - 10,
+          maxS: seg.to + 10,
+        });
+      }
+    }
   }
 
   return { crossings, pedestrians };
@@ -172,12 +220,26 @@ export function stepPedestrians(
       case 'waiting':
         p.timer -= dt;
         if (p.timer <= 0 && p.kind === 'crosser') p.state = 'walking';
+        else if (p.timer <= 0 && p.kind === 'walker') p.state = 'strolling';
         break;
 
       case 'cheering':
         // Purely decorative; the render layer bobs them using this.
         p.timer += dt;
         break;
+
+      case 'strolling': {
+        // Up and down the pavement, turning round at the end of the block.
+        p.s += p.along * p.speed * dt;
+        if (p.s < p.minS) {
+          p.s = p.minS;
+          p.along = 1;
+        } else if (p.s > p.maxS) {
+          p.s = p.maxS;
+          p.along = -1;
+        }
+        break;
+      }
 
       case 'walking': {
         p.lateral += p.dir * p.speed * dt;
@@ -219,7 +281,9 @@ export function stepPedestrians(
         p.timer -= dt;
         if (p.timer <= 0) {
           // Dust themselves off and go back to where they were.
-          p.state = p.kind === 'crosser' ? 'waiting' : 'cheering';
+          p.state = p.kind === 'crosser'
+            ? 'waiting'
+            : p.kind === 'walker' ? 'strolling' : 'cheering';
           p.timer = 2;
           p.lateral = clamp(p.lateral, -p.span, p.span);
           p.height = 0;

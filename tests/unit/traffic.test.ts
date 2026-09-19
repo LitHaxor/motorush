@@ -6,7 +6,7 @@ import { TrafficSystem, collideWithTraffic, collideRacers, CAR_TYPES } from '../
 import { TRAFFIC, CRASH, HEALTH } from '../../src/sim/config';
 import type { Car } from '../../src/sim/types';
 
-const track = new Track({ seed: 6, length: 4000, divided: false });
+const track = new Track({ seed: 6, length: 4000 });
 const build = (density = 1) => new TrafficSystem(track, makeRng(77), { density });
 
 /** Park a single car right on top of the rider for collision tests. */

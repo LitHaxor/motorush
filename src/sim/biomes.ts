@@ -142,3 +142,76 @@ export const inCity = (segments: readonly BiomeSegment[], s: number): boolean =>
 
 export const cityBlend = (segments: readonly BiomeSegment[], s: number, ramp = 70): number =>
   blendAt(segments, s, 'city', ramp);
+
+// ------------------------------------------------------------ road layout
+// Where the road divides, and where it splits into a fork with a route each
+// side. Decided alongside the biomes rather than inside the Track, because a
+// split that starts in a city has to end in one too - so the city is stretched
+// to cover the whole thing.
+
+export interface DividedSection {
+  from: number;
+  to: number;
+  fork: boolean;
+  halfWidth: number;
+}
+
+export interface RoadLayoutOptions {
+  medianHalfWidth: number;
+  forkHalfWidth: number;
+  forkChance: number;
+  medianLength: [number, number];
+  forkLength: [number, number];
+  gap: [number, number];
+  /** Slack left around a fork when a city is stretched to cover it. */
+  cityMargin: number;
+}
+
+/**
+ * Build the divided/fork sections, then make any biome a fork starts in cover
+ * the whole fork. `biomes` is edited in place.
+ */
+export function buildRoadLayout(
+  trackLength: number,
+  rng: Rng,
+  biomes: BiomeSegment[],
+  opts: RoadLayoutOptions,
+): DividedSection[] {
+  const sections: DividedSection[] = [];
+  let s = rng.range(500, 1100);
+
+  while (s < trackLength - 400) {
+    const fork = rng.chance(opts.forkChance);
+    const range = fork ? opts.forkLength : opts.medianLength;
+    const length = rng.range(range[0], range[1]);
+    sections.push({
+      from: s,
+      to: Math.min(trackLength, s + length),
+      fork,
+      halfWidth: fork ? opts.forkHalfWidth : opts.medianHalfWidth,
+    });
+    s += length + rng.range(opts.gap[0], opts.gap[1]);
+  }
+
+  // A split that begins in a biome should end in the same one. Stretching the
+  // biome is the right way round: shortening the fork to fit a 400 m city
+  // would throw away the point of a long split.
+  for (const section of sections) {
+    const host = biomes.find(
+      (b) => section.from >= b.from - BIOME.margin && section.from <= b.to + BIOME.margin,
+    );
+    if (!host) continue;
+
+    const index = biomes.indexOf(host);
+    const before = biomes[index - 1];
+    const after = biomes[index + 1];
+    // Never swallow a neighbour; leave a stretch of open country between.
+    const floor = before ? before.to + BIOME.gap[0] * 0.5 : 0;
+    const ceiling = after ? after.from - BIOME.gap[0] * 0.5 : trackLength;
+
+    host.from = Math.max(floor, Math.min(host.from, section.from - opts.cityMargin));
+    host.to = Math.min(ceiling, Math.max(host.to, section.to + opts.cityMargin));
+  }
+
+  return sections;
+}

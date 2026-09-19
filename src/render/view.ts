@@ -16,7 +16,8 @@ import { swingProgress } from '../sim/combat';
 import { pickSky, type SkyPreset } from './palette';
 import { createSky, type SkyHandle } from './sky';
 import {
-  buildRoad, buildWater, buildPaddies, buildFinishLine, buildStartLine, type RoadHandle,
+  buildRoad, buildWater, buildPaddies, buildPavements,
+  buildFinishLine, buildStartLine, type RoadHandle,
 } from './roadmesh';
 import {
   buildScenery, createPickupMesh, createPedestrianMesh, buildCrossings,
@@ -81,6 +82,7 @@ export class GameView {
   private trackProps: THREE.Group | null = null;
   private water: { group: THREE.Group; dispose(): void } | null = null;
   private paddies: { group: THREE.Group; dispose(): void } | null = null;
+  private pavements: { group: THREE.Group; dispose(): void } | null = null;
 
   private readonly bikeRigs = new Map<number, BikeRig>();
   private readonly riderRigs = new Map<number, RiderRig>();
@@ -232,6 +234,9 @@ export class GameView {
     this.paddies = buildPaddies(world.track, world.biomes);
     this.scene.add(this.paddies.group);
 
+    this.pavements = buildPavements(world.track, world.biomes);
+    this.scene.add(this.pavements.group);
+
     this.trackProps = new THREE.Group();
     this.trackProps.add(buildStartLine(world.track));
     this.trackProps.add(buildFinishLine(world.track, world.raceDistance));
@@ -347,6 +352,11 @@ export class GameView {
       this.scene.remove(this.paddies.group);
       this.paddies.dispose();
       this.paddies = null;
+    }
+    if (this.pavements) {
+      this.scene.remove(this.pavements.group);
+      this.pavements.dispose();
+      this.pavements = null;
     }
   }
 
@@ -835,9 +845,15 @@ export class GameView {
       rig.body.rotation.set(0, 0, 0);
       rig.body.position.y = 0;
 
-      if (ped.state === 'walking') {
-        // Face the way they are crossing and swing their legs.
-        rig.root.rotation.set(0, at.heading - ped.dir * Math.PI / 2, 0);
+      if (ped.state === 'walking' || ped.state === 'strolling') {
+        // Crossers face across the road; walkers face along the pavement.
+        rig.root.rotation.set(
+          0,
+          ped.state === 'strolling'
+            ? at.heading + (ped.along > 0 ? 0 : Math.PI)
+            : at.heading - ped.dir * Math.PI / 2,
+          0,
+        );
         const swing = Math.sin(this.time * ped.speed * 4.5 + ped.id) * 0.55;
         rig.legL.rotation.x = swing;
         rig.legR.rotation.x = -swing;

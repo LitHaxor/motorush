@@ -5,7 +5,9 @@ import * as THREE from 'three';
 import { TRACK } from '../sim/config';
 import type { Track } from '../sim/track';
 import type { SkyPreset } from './palette';
-import { makeMarkingsTexture, makeCheckerTexture, makeGuardrailTexture } from './textures';
+import {
+  makeMarkingsTexture, makeCheckerTexture, makeGuardrailTexture, makePavementTexture,
+} from './textures';
 import { applyPbr, type GroundTextures } from './assets';
 import { blendAt, coastAt, type BiomeSegment } from '../sim/biomes';
 
@@ -366,6 +368,56 @@ export function buildRoad(
     group,
     dispose() {
       for (const d of disposables) d.dispose();
+    },
+  };
+}
+
+/**
+ * Raised concrete pavement through the city sections, with a kerb along the
+ * road edge. Grass verges beside city blocks look like a park; pavement is
+ * what makes a street read as a street.
+ */
+export function buildPavements(
+  track: Track,
+  biomes: readonly BiomeSegment[],
+): { group: THREE.Group; dispose(): void } {
+  const group = new THREE.Group();
+  group.name = 'pavements';
+  const cities = biomes.filter((b) => b.kind === 'city');
+  if (!cities.length) return { group, dispose() {} };
+
+  const tex = makePavementTexture();
+  tex.repeat.set(1, 1);
+  const material = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.92, metalness: 0.02 });
+  const geos: THREE.BufferGeometry[] = [];
+  const WIDTH = 5.5;
+  const KERB = 0.16;
+
+  for (const seg of cities) {
+    const from = Math.max(0, seg.from - 20);
+    const to = Math.min(track.length, seg.to + 20);
+    for (const sign of [-1, 1]) {
+      // Starts at the kerb, where the gravel shoulder would otherwise be.
+      const inner = (s: number) => sign * (track.edgeAt(s) + 0.05);
+      const outer = (s: number) => sign * (track.edgeAt(s) + 0.05 + WIDTH);
+      const bands: Band[] = sign < 0
+        ? [{ lateral: outer, u: 1 }, { lateral: inner, u: 0 }]
+        : [{ lateral: inner, u: 0 }, { lateral: outer, u: 1 }];
+      const geo = ribbonGeometry(track, bands, WIDTH, () => KERB, 2, from, to);
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.receiveShadow = true;
+      mesh.name = 'pavement';
+      group.add(mesh);
+      geos.push(geo);
+    }
+  }
+
+  return {
+    group,
+    dispose() {
+      for (const g of geos) g.dispose();
+      material.dispose();
+      tex.dispose();
     },
   };
 }

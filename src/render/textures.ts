@@ -619,3 +619,53 @@ export function makeBarkTexture({ size = 256 } = {}): THREE.CanvasTexture {
   grain(ctx, size, size, 20);
   return finish(c, { repeatX: 2, repeatY: 3 });
 }
+
+/** City pavement: concrete slabs with joints, and a kerb along one edge. */
+export function makePavementTexture({ size = 512, slabs = 6 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+  ctx.fillStyle = '#9a9791';
+  ctx.fillRect(0, 0, size, size);
+
+  // Slab-to-slab tonal variation.
+  const step = size / slabs;
+  for (let y = 0; y < slabs; y++) {
+    for (let x = 0; x < slabs; x++) {
+      ctx.globalAlpha = 0.05 + Math.random() * 0.12;
+      ctx.fillStyle = Math.random() > 0.5 ? '#b3b0a9' : '#84817b';
+      ctx.fillRect(x * step, y * step, step, step);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Joints between the slabs.
+  ctx.strokeStyle = '#6d6a65';
+  ctx.lineWidth = 3;
+  for (let i = 1; i < slabs; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * step, 0);
+    ctx.lineTo(i * step, size);
+    ctx.moveTo(0, i * step);
+    ctx.lineTo(size, i * step);
+    ctx.stroke();
+  }
+
+  // Staining and a few cracks.
+  for (let i = 0; i < 120; i++) {
+    ctx.globalAlpha = 0.03 + Math.random() * 0.08;
+    ctx.fillStyle = Math.random() > 0.5 ? '#6f6c67' : '#c2bfb8';
+    ctx.beginPath();
+    ctx.arc(Math.random() * size, Math.random() * size, 4 + Math.random() * 26, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Kerb along the road edge (u = 0), lighter with a shadow line.
+  ctx.fillStyle = '#c8c5be';
+  ctx.fillRect(0, 0, size * 0.09, size);
+  ctx.fillStyle = '#5f5c57';
+  ctx.fillRect(size * 0.09, 0, size * 0.018, size);
+
+  grain(ctx, size, size, 18);
+  return finish(c, { repeatX: 1, repeatY: 1, aniso: 8 });
+}

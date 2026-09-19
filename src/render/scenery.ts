@@ -98,9 +98,10 @@ export function buildScenery(
         // Nothing grows out in the water.
         if (sea.blend > 0.4 && sign === sea.side) continue;
 
+        const here = edgeAt(s);
         const distance = urban || density.reach <= 0
-          ? rng.range(edge + 1.5, edge + 4)
-          : rng.range(edge + 2, density.reach);
+          ? rng.range(here + 6, here + 9)
+          : rng.range(here + 2, Math.max(here + 6, density.reach));
 
         const pick = species[Math.floor(rng() * species.length)];
         const pool = bySpecies.get(pick) ?? bySpecies.get('broadleaf') ?? [0];
@@ -114,7 +115,7 @@ export function buildScenery(
         // Keep the canopy off the carriageway. A tree's crown spreads with its
         // height, so one planted close to the verge has to be a small one -
         // which is also how roadside planting actually looks.
-        const clearance = Math.max(0, distance - edge - 0.5);
+        const clearance = Math.max(0, distance - here - 0.5);
         const maxHeight = clearance / Math.max(0.05, variant.radius * 0.85);
         const height = Math.min(rng.range(range[0], range[1]), maxHeight);
         if (height < range[0] * 0.45) continue;
@@ -455,7 +456,7 @@ export function buildScenery(
         const proto = PROTOTYPES[idx];
         const jitter = rng.range(0.85, 1.2);
         const width = proto.w * jitter;
-        const setback = edge + 3 + rng.range(0, 5);
+        const setback = edgeAt(s) + 3.5 + rng.range(0, 3);
         const at = track.toWorld(s + width / 2, sign * (setback + proto.d / 2));
         bv.set(at.x, at.y + (proto.h * jitter) / 2 - 0.4, at.z);
         bq.setFromAxisAngle(up, at.heading);
