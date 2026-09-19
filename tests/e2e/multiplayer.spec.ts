@@ -8,7 +8,8 @@
 import { type APIRequestContext, type Browser, type Page, expect, test } from '@playwright/test';
 import type {} from '../../src/main';
 
-const ONLINE = '/?online=1&emulator=1';
+// Online is the default; the flag here only points it at the local emulator.
+const ONLINE = '/?emulator=1';
 
 /**
  * Every rider is a whole browser running a software-GL WebGL scene, and a

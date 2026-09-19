@@ -115,6 +115,42 @@ export class GameAudio {
 
     this.started = true;
     await ctx.resume();
+    this.nudge(ctx);
+  }
+
+  /**
+   * Push a moment of silence through the graph.
+   *
+   * Mobile browsers will happily report a running context and still produce
+   * nothing until something has actually been played from inside a gesture.
+   * A one-sample silent buffer is the cheapest way to satisfy that.
+   */
+  private nudge(ctx: AudioContext): void {
+    try {
+      const buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+    } catch {
+      /* nothing to lose if it is refused */
+    }
+  }
+
+  /**
+   * Bring the sound back after the tab has been away.
+   *
+   * Phones suspend the context when you switch apps or lock the screen, and
+   * it does not come back on its own - the race returns in silence.
+   */
+  async resume(): Promise<void> {
+    if (!this.started || !this.ctx) return;
+    if (this.ctx.state === 'running') return;
+    try {
+      await this.ctx.resume();
+    } catch {
+      /* it will be tried again on the next interaction */
+    }
   }
 
   setMuted(muted: boolean): void {

@@ -26,14 +26,15 @@ const NEUTRAL: RacerInput = {
 };
 
 /**
- * Online is opt-in via `?online=1` for now.
+ * Online is on by default.
  *
- * Deliberately not on by default: it is unproven, and defaulting it on would
- * have the end-to-end tests and every page load open real lobbies against the
- * live database. Flip this to always-on once it has been driven in anger.
+ * It was opt-in via `?online=1` while it was unproven, which mostly served to
+ * hide it from anyone who just opened the site. `?offline=1` is the way out,
+ * and it exists so the end-to-end tests that are not about multiplayer do not
+ * open real rooms on the live database every time they run.
  */
 function onlineRequested(): boolean {
-  return urlFlag('online');
+  return !urlFlag('offline');
 }
 
 /** `?emulator=1` races against the local Firebase emulator instead of the real project. */
@@ -118,6 +119,24 @@ class Game {
       onQuit: () => this.quitToMenu(),
     });
 
+    // Unlock audio on the very first interaction, whatever it is. Waiting for
+    // the start button means a guest whose race begins on the host's flag -
+    // not on a gesture of their own - never gets any sound at all.
+    const unlock = (): void => {
+      void this.audio.start();
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('touchend', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('touchend', unlock);
+    window.addEventListener('keydown', unlock);
+
+    // Phones suspend the audio context when the tab goes away.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) void this.audio.resume();
+    });
+
     this.input.onPause = () => this.togglePause();
     this.input.onMute = () => this.toggleMute();
 
@@ -155,7 +174,10 @@ class Game {
         readConfig(import.meta.env as unknown as Record<string, unknown>),
         emulatorRequested(),
       );
-      if (this.netSession) this.screens.enableOnline();
+      this.screens.enableOnline(
+        this.netSession !== null,
+        'Online is unavailable right now. Races here are against bots.',
+      );
     }
   }
 

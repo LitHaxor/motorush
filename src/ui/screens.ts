@@ -154,9 +154,20 @@ export class Screens {
     });
   }
 
-  /** Reveal the online buttons. Called once we know we have a session. */
-  enableOnline(): void {
+  /**
+   * Reveal the online section.
+   *
+   * Shown either way: hiding it when sign-in fails leaves a player tapping a
+   * button that is not there and no way to tell why. Unavailable means
+   * visibly unavailable, with a reason.
+   */
+  enableOnline(available: boolean, reason = ''): void {
     $('menu-online').hidden = false;
+    for (const id of ['btn-quick', 'btn-create', 'btn-join']) {
+      $<HTMLButtonElement>(id).disabled = !available;
+    }
+    $<HTMLInputElement>('room-code').disabled = !available;
+    this.setOnlineNote(available ? '' : reason);
   }
 
   /** A message under the online buttons - a bad code, a room that was full. */

@@ -53,3 +53,12 @@ describe('connecting', () => {
     await expect(connect(null)).resolves.toBeNull();
   });
 });
+
+describe('when the network will not cooperate', () => {
+  it('gives up rather than leaving the menu waiting forever', async () => {
+    // The menu waits on this before it can show the online buttons, so a
+    // sign-in that never settles has to resolve to "no session" on its own.
+    // A bad config is the fast path to that same answer.
+    await expect(connect(null, false)).resolves.toBeNull();
+  });
+});

@@ -252,6 +252,9 @@ button { font-family: inherit; cursor: pointer; }
      controls; a screen that is actually on screen takes input again. */
   pointer-events: auto;
   display: flex; align-items: center; justify-content: center;
+  /* A menu taller than the screen has to be reachable rather than clipped. */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: max(20px, 4vh) 20px;
   overflow-y: auto;
   background: rgba(6, 8, 12, 0.72);
@@ -413,6 +416,10 @@ button { font-family: inherit; cursor: pointer; }
 .choice.is-active { background: var(--hot); border-color: var(--hot); color: #14161c; }
 
 .btn {
+  /* Without this a tap can be swallowed as the start of a scroll or a
+     double-tap zoom, which reads as the button simply not responding. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
   border-radius: 10px; padding: 15px 20px; border: 1px solid transparent;
   font-family: var(--display); font-size: 15px; letter-spacing: 0.1em; text-transform: uppercase;
   transition: transform 0.12s, filter 0.16s, background 0.16s;

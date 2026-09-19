@@ -6,7 +6,9 @@ import type { DifficultyKey } from '../../src/sim/types';
 import type {} from '../../src/main';
 
 export async function gotoGame(page: Page): Promise<void> {
-  await page.goto('/');
+  // Online is on by default now; these specs are not about it, and without
+  // opting out every run would open real rooms on the live database.
+  await page.goto('/?offline=1');
   // Wait for the renderer to finish loading textures and models.
   await page.waitForFunction(() => window.motorush?.ready() === true, null, { timeout: 45_000 });
   await page.waitForFunction(() => window.motorush?.mode() === 'menu');

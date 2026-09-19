@@ -94,6 +94,15 @@ export function readConfig(env: Record<string, unknown>): NetConfig | null {
  * and the race. The uid is per-browser and disposable; the rider name is the
  * identity anyone actually sees.
  */
+/**
+ * How long to wait for sign-in before giving up.
+ *
+ * Anonymous sign-in normally lands in well under a second, but on a flaky
+ * mobile connection it can simply never settle - and the menu waits on this,
+ * so without a deadline the online buttons would never appear at all.
+ */
+const SIGN_IN_TIMEOUT_MS = 12_000;
+
 export async function connect(
   config: NetConfig | null,
   useEmulator = false,
@@ -111,7 +120,11 @@ export async function connect(
       connectDatabaseEmulator(db, EMULATOR.host, EMULATOR.databasePort);
     }
 
-    const cred = await signInAnonymously(auth);
+    const cred = await Promise.race([
+      signInAnonymously(auth),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), SIGN_IN_TIMEOUT_MS)),
+    ]);
+    if (!cred) return null;
     return { app, auth, db, uid: cred.user.uid };
   } catch {
     // Auth not enabled, offline, blocked by an extension - all the same to us.
