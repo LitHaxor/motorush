@@ -81,7 +81,11 @@ const CONIFER_SPRAYS = [
   { x: 0.0, y: 0.62, w: 0.99, h: 0.35 },
 ];
 
+// Weighted toward the multi-leaf sprig: a card carrying one enormous single
+// leaf reads as a leaf, not as foliage.
 const BROADLEAF_SPRIGS = [
+  { x: 0.0, y: 0.05, w: 0.34, h: 0.9 },
+  { x: 0.0, y: 0.05, w: 0.34, h: 0.9 },
   { x: 0.0, y: 0.05, w: 0.34, h: 0.9 },
   { x: 0.33, y: 0.05, w: 0.22, h: 0.75 },
   { x: 0.55, y: 0.03, w: 0.22, h: 0.82 },
@@ -89,195 +93,199 @@ const BROADLEAF_SPRIGS = [
 ];
 
 export interface TreeVariant {
+  /** The atlas this canopy samples from. */
   texture: THREE.CanvasTexture;
-  /** Height/width ratio, used to shape the billboard planes. */
-  aspect: number;
+  /** Canopy geometry for a unit-height tree, base at y=0. */
+  geometry: THREE.BufferGeometry;
   conifer: boolean;
 }
 
+interface Crop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 /**
- * Composite one tree from an atlas. `spread` controls how wide the crown is,
- * `tiers` how many layers of branches, `taper` how sharply it narrows.
+ * Build a canopy out of many small foliage cards scattered through a 3D
+ * volume, rather than a few large crossed planes.
+ *
+ * Crossed planes always betray themselves: from an oblique angle you catch
+ * them near edge-on and the tree flattens into a card. Sixty-odd small quads
+ * distributed through a cone (or an ellipsoid) have real depth from every
+ * direction, cost about 120 triangles, and sample the photographic atlas
+ * directly so the needles stay sharp instead of being resampled into a
+ * tree-sized canvas.
  */
-function compositeConifer(
-  atlas: HTMLCanvasElement,
+function buildCanopy(
+  crops: Crop[],
   rng: Rng,
-  { width = 384, height = 640, tiers = 22, spread = 0.54, taper = 1.15 } = {},
-): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = width;
-  c.height = height;
-  const ctx = c.getContext('2d');
-  if (!ctx) throw new Error('2D context unavailable');
+  {
+    cards = 64,
+    conifer = true,
+    radius = 0.34,
+    taper = 1.0,
+    cardSize = 0.34,
+    baseY = 0.07,
+  } = {},
+): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
 
-  const aw = atlas.width;
-  const ah = atlas.height;
-  const cx = width / 2;
+  const right = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const outward = new THREE.Vector3();
+  const centre = new THREE.Vector3();
+  const corner = new THREE.Vector3();
+  const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
-  // Trunk first, so the canopy covers it rather than the other way round.
-  ctx.strokeStyle = '#3b2e21';
-  ctx.lineCap = 'round';
-  ctx.lineWidth = width * 0.05;
-  ctx.beginPath();
-  ctx.moveTo(cx, height);
-  ctx.lineTo(cx, height * 0.12);
-  ctx.stroke();
+  const pushCard = (
+    cx: number, cy: number, cz: number,
+    nx: number, nz: number,
+    w: number, h: number,
+    crop: Crop,
+    tilt: number,
+  ) => {
+    outward.set(nx, 0, nz).normalize();
+    // Card plane: `right` across the face, `up` roughly vertical but tilted.
+    right.crossVectors(WORLD_UP, outward).normalize();
+    up.copy(WORLD_UP).addScaledVector(outward, tilt).normalize();
+    centre.set(cx, cy, cz);
 
-  /** Draw one spray, both sides, at a given tier. */
-  const layer = (y: number, half: number, droop: number, alpha: number, scale: number) => {
-    const spray = CONIFER_SPRAYS[Math.floor(rng() * CONIFER_SPRAYS.length)];
-    const sx = spray.x * aw;
-    const sy = spray.y * ah;
-    const sw = spray.w * aw;
-    const sh = spray.h * ah;
-    const w = half * scale;
-    // Keep the branch's own proportions so the needles do not smear.
-    const h = Math.max(26, (w / sw) * sh * 1.9);
-    ctx.globalAlpha = alpha;
-    for (const side of [1, -1]) {
-      ctx.save();
-      ctx.translate(cx, y);
-      ctx.scale(side, 1);
-      ctx.rotate(droop);
-      ctx.drawImage(atlas, sx, sy, sw, sh, -w * 0.12, -h / 2, w, h);
-      ctx.restore();
+    const base = positions.length / 3;
+    // Foliage shades better with a normal biased upward - straight outward
+    // makes the underside of the canopy read as unlit.
+    const nlen = Math.hypot(outward.x, 0.9, outward.z);
+    for (const [sx, sy, u, v] of [
+      [-0.5, -0.5, 0, 0],
+      [0.5, -0.5, 1, 0],
+      [0.5, 0.5, 1, 1],
+      [-0.5, 0.5, 0, 1],
+    ] as const) {
+      corner.copy(centre)
+        .addScaledVector(right, sx * w)
+        .addScaledVector(up, sy * h);
+      positions.push(corner.x, corner.y, corner.z);
+      normals.push(outward.x / nlen, 0.9 / nlen, outward.z / nlen);
+      uvs.push(crop.x + u * crop.w, 1 - (crop.y + (1 - v) * crop.h));
     }
-    ctx.globalAlpha = 1;
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    // Mirrored copy so the card is visible from behind without a DoubleSide
+    // material, which would negate the normal and black out half the canopy.
+    const b2 = positions.length / 3;
+    for (const [sx, sy, u, v] of [
+      [0.5, -0.5, 1, 0],
+      [-0.5, -0.5, 0, 0],
+      [-0.5, 0.5, 0, 1],
+      [0.5, 0.5, 1, 1],
+    ] as const) {
+      corner.copy(centre)
+        .addScaledVector(right, sx * w)
+        .addScaledVector(up, sy * h);
+      positions.push(corner.x, corner.y, corner.z);
+      normals.push(-outward.x / nlen, 0.9 / nlen, -outward.z / nlen);
+      uvs.push(crop.x + u * crop.w, 1 - (crop.y + (1 - v) * crop.h));
+    }
+    indices.push(b2, b2 + 1, b2 + 2, b2, b2 + 2, b2 + 3);
   };
 
-  for (let i = 0; i < tiers; i++) {
-    const t = i / (tiers - 1); // 0 at the base
-    const y = height * (0.95 - t * 0.9);
-    const half = width * spread * Math.pow(1 - t, taper) + width * 0.05;
-    const droopBase = 0.16 + (1 - t) * 0.16;
+  for (let i = 0; i < cards; i++) {
+    const crop = crops[Math.floor(rng() * crops.length)];
+    const aspect = crop.h / crop.w;
 
-    // Three overlapping sprays per tier at slightly different angles: one
-    // spray per tier leaves gaps you can see daylight through.
-    layer(y + half * 0.06, half, droopBase + 0.1, 1, 1.0);
-    layer(y, half, droopBase, 1, 0.86);
-    layer(y - half * 0.05, half, droopBase - 0.07, 0.95, 0.66);
-  }
-
-  // Leader: one small spray standing upright at the very top.
-  const tip = CONIFER_SPRAYS[0];
-  ctx.save();
-  ctx.translate(cx, height * 0.05);
-  ctx.rotate(-Math.PI / 2);
-  const th = width * 0.3;
-  ctx.drawImage(
-    atlas, tip.x * aw, tip.y * ah, tip.w * aw, tip.h * ah,
-    -th * 0.5, -th * 0.3, th * 1.3, th * 0.6,
-  );
-  ctx.restore();
-
-  return c;
-}
-
-function compositeBroadleaf(
-  atlas: HTMLCanvasElement,
-  rng: Rng,
-  { width = 448, height = 512, clumps = 150, spread = 0.44 } = {},
-): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = width;
-  c.height = height;
-  const ctx = c.getContext('2d');
-  if (!ctx) throw new Error('2D context unavailable');
-
-  const aw = atlas.width;
-  const ah = atlas.height;
-  const cx = width / 2;
-  const cy = height * 0.36;
-  const rx = width * spread;
-  const ry = height * 0.33;
-
-  // Trunk and limbs FIRST, so the canopy buries them. Drawn on top they read
-  // as black sticks poking through the leaves.
-  ctx.strokeStyle = '#4a3a2b';
-  ctx.lineCap = 'round';
-  ctx.lineWidth = width * 0.05;
-  ctx.beginPath();
-  ctx.moveTo(cx, height);
-  ctx.lineTo(cx, cy + ry * 0.5);
-  ctx.stroke();
-  ctx.lineWidth = width * 0.02;
-  for (const dir of [-1, 1, -0.4, 0.4]) {
-    ctx.beginPath();
-    ctx.moveTo(cx, cy + ry * 0.7);
-    ctx.lineTo(cx + dir * rx * 0.5, cy - ry * 0.25);
-    ctx.stroke();
-  }
-
-  // Scatter leaves through an ellipse to build the crown. Two passes: a dark
-  // underlayer for depth, then the lit canopy over it.
-  const scatter = (count: number, darken: number, sizeScale: number) => {
-    ctx.globalAlpha = darken < 1 ? 0.9 : 1;
-    for (let i = 0; i < count; i++) {
-      const a = rng() * Math.PI * 2;
-      const r = Math.sqrt(rng()) * 0.98;
-      const x = cx + Math.cos(a) * rx * r;
-      const y = cy + Math.sin(a) * ry * r;
-      const leaf = BROADLEAF_SPRIGS[Math.floor(rng() * BROADLEAF_SPRIGS.length)];
-      const size = width * (0.2 + rng() * 0.16) * (1.15 - r * 0.28) * sizeScale;
-      const lh = (size / (leaf.w * aw)) * (leaf.h * ah);
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(rng() * Math.PI * 2);
-      if (darken < 1) ctx.filter = `brightness(${darken})`;
-      ctx.drawImage(
-        atlas, leaf.x * aw, leaf.y * ah, leaf.w * aw, leaf.h * ah,
-        -size / 2, -lh / 2, size, lh,
-      );
-      ctx.restore();
+    let y: number;
+    let ringR: number;
+    if (conifer) {
+      // Bias cards toward the base so the cone fills out properly.
+      const t = Math.pow(rng(), 0.72);
+      y = baseY + t * (1 - baseY);
+      ringR = radius * Math.pow(1 - t, taper) + 0.03;
+    } else {
+      // Ellipsoid crown, centred on the same height the radius falls off
+      // around - distributing about one centre and measuring from another
+      // gives a lopsided cylinder rather than a crown.
+      const CROWN_Y = 0.62;
+      const CROWN_H = 0.34;
+      const rel = (rng() - 0.5) * 2; // -1 .. 1
+      y = CROWN_Y + rel * CROWN_H;
+      ringR = radius * Math.sqrt(Math.max(0.05, 1 - rel * rel));
     }
-    ctx.globalAlpha = 1;
-    ctx.filter = 'none';
-  };
 
-  scatter(Math.round(clumps * 0.55), 0.62, 1.1);
-  scatter(clumps, 1, 1);
+    const angle = rng() * Math.PI * 2;
+    // Fill from near the trunk outward. Starting the cards well off-axis
+    // leaves a gap between canopy and trunk, and the outermost ones then read
+    // as clumps floating in mid-air.
+    const r = ringR * (0.12 + Math.sqrt(rng()) * 0.9);
+    const px = Math.cos(angle) * r;
+    const pz = Math.sin(angle) * r;
 
-  return c;
+    const w = cardSize * (0.7 + rng() * 0.6) * (conifer ? 0.6 + ringR * 1.6 : 1);
+    pushCard(px, y, pz, Math.cos(angle), Math.sin(angle), w, w * aspect, crop, (rng() - 0.5) * 0.7);
+  }
+
+  // Trunk: a couple of crossed quads in bark brown, using a clean corner of
+  // the atlas would tint it green, so it is drawn as untextured dark geometry
+  // via a very small UV patch at the darkest part of a crop.
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeBoundingSphere();
+  return geo;
 }
 
-/** Build a set of tree billboards from the atlases. */
+/** Build a set of canopies from the atlases. */
 export function buildTreeVariants(atlas: FoliageAtlas, rng: Rng): TreeVariant[] {
   const variants: TreeVariant[] = [];
 
+  const asTexture = (canvas: HTMLCanvasElement) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  };
+
   if (atlas.conifer) {
-    // Eight conifer silhouettes: tall and narrow through to short and broad.
+    const tex = asTexture(atlas.conifer);
     const shapes = [
-      { tiers: 24, spread: 0.53, taper: 1.2, height: 704 },
-      { tiers: 22, spread: 0.54, taper: 1.15, height: 640 },
-      { tiers: 19, spread: 0.6, taper: 1.0, height: 576 },
-      { tiers: 26, spread: 0.52, taper: 1.25, height: 768 },
-      { tiers: 17, spread: 0.64, taper: 0.9, height: 512 },
-      { tiers: 23, spread: 0.51, taper: 1.25, height: 672 },
-      { tiers: 15, spread: 0.66, taper: 0.85, height: 448 },
-      { tiers: 20, spread: 0.56, taper: 1.05, height: 608 },
+      { cards: 200, radius: 0.3, taper: 1.15, cardSize: 0.26 },
+      { cards: 170, radius: 0.34, taper: 1.0, cardSize: 0.29 },
+      { cards: 230, radius: 0.28, taper: 1.3, cardSize: 0.23 },
+      { cards: 155, radius: 0.38, taper: 0.85, cardSize: 0.32 },
+      { cards: 190, radius: 0.32, taper: 1.05, cardSize: 0.27 },
+      { cards: 140, radius: 0.4, taper: 0.75, cardSize: 0.35 },
+      { cards: 215, radius: 0.31, taper: 1.2, cardSize: 0.245 },
+      { cards: 165, radius: 0.36, taper: 0.95, cardSize: 0.3 },
     ];
     for (const shape of shapes) {
-      const canvas = compositeConifer(atlas.conifer, rng, { width: 384, ...shape });
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = 8;
-      variants.push({ texture: tex, aspect: canvas.height / canvas.width, conifer: true });
+      variants.push({
+        texture: tex,
+        geometry: buildCanopy(CONIFER_SPRAYS, rng, { conifer: true, ...shape }),
+        conifer: true,
+      });
     }
   }
 
   if (atlas.broadleaf) {
+    const tex = asTexture(atlas.broadleaf);
+    // Small cards, many of them: a leaf that is a tenth of the tree's height
+    // is already a metre across on a 12 m tree.
     const shapes = [
-      { clumps: 150, spread: 0.46, height: 512 },
-      { clumps: 120, spread: 0.4, height: 480 },
-      { clumps: 180, spread: 0.49, height: 544 },
-      { clumps: 100, spread: 0.36, height: 448 },
+      { cards: 420, radius: 0.36, cardSize: 0.115 },
+      { cards: 340, radius: 0.31, cardSize: 0.105 },
+      { cards: 500, radius: 0.4, cardSize: 0.125 },
+      { cards: 290, radius: 0.28, cardSize: 0.095 },
     ];
     for (const shape of shapes) {
-      const canvas = compositeBroadleaf(atlas.broadleaf, rng, { width: 448, ...shape });
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = 8;
-      variants.push({ texture: tex, aspect: canvas.height / canvas.width, conifer: false });
+      variants.push({
+        texture: tex,
+        geometry: buildCanopy(BROADLEAF_SPRIGS, rng, { conifer: false, taper: 1, ...shape }),
+        conifer: false,
+      });
     }
   }
 

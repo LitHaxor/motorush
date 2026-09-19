@@ -8,7 +8,7 @@ import type { Rng, PickupKind } from '../sim/types';
 import type { SkyPreset } from './palette';
 import { makeTerrainElevation, ribbonGeometry } from './roadmesh';
 import {
-  makeSignTexture, makeFacadeTexture, makeCheckerTexture, makeZebraTexture,
+  makeSignTexture, makeFacadeTexture, makeCheckerTexture, makeZebraTexture, makeBarkTexture,
 } from './textures';
 import { instanceModel, FIRST_BROADLEAF, type ModelLibrary } from './models';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -75,7 +75,11 @@ export function buildScenery(
         treePlacements.push({
           s,
           lateral,
-          height: urban ? rng.range(5, 8) : rng.range(8, 21),
+          // Broadleaf crowns are wide, so cap their height or they sprawl
+          // across the whole verge.
+          height: urban
+            ? rng.range(5, 8)
+            : broadleaf ? rng.range(7, 13) : rng.range(9, 22),
           rot: rng() * Math.PI,
           // Subtle per-tree tint so no two neighbours match exactly.
           tint: rng.range(0.78, 1.12),
@@ -93,32 +97,44 @@ export function buildScenery(
     }
 
     const tintColour = new THREE.Color();
+    const barkTex = makeBarkTexture();
+    const barkMat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.95 });
+    const trunkGeo = new THREE.CylinderGeometry(0.018, 0.038, 1, 6, 1, true);
+    trunkGeo.translate(0, 0.5, 0);
+    disposables.push(barkTex, barkMat, trunkGeo);
+
+    // Trunks for every tree, in one instanced draw.
+    const trunks = new THREE.InstancedMesh(trunkGeo, barkMat, treePlacements.length);
+    trunks.castShadow = true;
+    trunks.frustumCulled = false;
+    treePlacements.forEach((spot, i) => {
+      const pos = groundAt(track, spot.s, spot.lateral, elevate);
+      dummy.position.copy(pos);
+      dummy.rotation.set(0, spot.rot, 0);
+      dummy.scale.set(spot.height, spot.height, spot.height);
+      dummy.updateMatrix();
+      trunks.setMatrixAt(i, dummy.matrix);
+    });
+    trunks.instanceMatrix.needsUpdate = true;
+    instancedMeshes.push(trunks);
+
     treeVariants.forEach((variant, vi) => {
       const spots = buckets[vi];
       if (!spots.length) return;
 
-      // Two planes crossing through the trunk.
-      const blades: THREE.BufferGeometry[] = [];
-      for (let i = 0; i < 2; i++) {
-        const plane = new THREE.PlaneGeometry(1 / variant.aspect, 1, 1, 1);
-        plane.translate(0, 0.5, 0);
-        plane.rotateY((i / 2) * Math.PI);
-        blades.push(plane);
-      }
-      const geo = mergeGeometries(blades, false) ?? blades[0];
-      for (const b of blades) if (b !== geo) b.dispose();
-
       const mat = new THREE.MeshStandardMaterial({
         map: variant.texture,
         // Alpha test, not blending: nothing to sort, and depth still writes so
-        // trees occlude each other correctly.
-        alphaTest: 0.28,
-        side: THREE.DoubleSide,
+        // the cards occlude each other correctly inside the canopy.
+        alphaTest: 0.4,
+        // The canopy carries mirrored cards, so each face is front-facing and
+        // three never negates the normal on us.
+        side: THREE.FrontSide,
         roughness: 0.95,
         metalness: 0,
       });
 
-      const mesh = new THREE.InstancedMesh(geo, mat, spots.length);
+      const mesh = new THREE.InstancedMesh(variant.geometry, mat, spots.length);
       mesh.castShadow = false; // alpha-tested shadows need a custom depth pass
       mesh.frustumCulled = false;
       spots.forEach((spot, i) => {
@@ -134,7 +150,7 @@ export function buildScenery(
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       instancedMeshes.push(mesh);
-      disposables.push(geo, mat, variant.texture);
+      disposables.push(variant.geometry, mat, variant.texture);
     });
   }
 
