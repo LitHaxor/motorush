@@ -19,8 +19,23 @@ export interface SceneryHandle {
   group: THREE.Group;
   /** Mountains are re-centred on the camera each frame to fake infinite distance. */
   mountains: THREE.Group;
+  /**
+   * Hide the scenery chunks the fog has already swallowed. Frustum culling
+   * alone will not do it: the view is a long thin cone, so a tree four
+   * kilometres up the road sits squarely inside it and draws in full.
+   */
+  cull(cameraX: number, cameraZ: number, radius: number): void;
   dispose(): void;
 }
+
+/**
+ * How far you can see before the fog has finished the job, for a given
+ * FogExp2 density. Three weights fog by exp(-(density * depth)^2), so at
+ * 2.6 / density the far side is 99.9% fog and nothing behind it can matter.
+ * Capped so the clearest preset does not simply switch culling off.
+ */
+export const cullRadius = (fogDensity: number): number =>
+  Math.min(2000, 2.6 / fogDensity);
 
 const dummy = new THREE.Object3D();
 
@@ -34,6 +49,72 @@ function groundAt(
   const p = track.toWorld(s, lateral);
   return new THREE.Vector3(p.x, p.y + elevate(s, lateral), p.z);
 }
+
+/**
+ * How wide a scenery chunk is, in metres. Small enough that most of the course
+ * falls outside the frustum, big enough not to bury the driver in draw calls.
+ */
+const CHUNK = 200;
+
+/**
+ * Split an instanced mesh into a grid of smaller ones so the frustum can throw
+ * most of them away.
+ *
+ * An InstancedMesh gets a single bounding sphere covering every instance it
+ * holds, so one mesh carrying the whole course's trees has a sphere kilometres
+ * across. It intersects the frustum wherever you happen to be standing, and
+ * three.js then draws it in full - every tree on the track, every frame,
+ * including the ones behind you and the ones four kilometres up the road.
+ * Bucketing the instances by world position gives each chunk a tight sphere,
+ * and the ones you cannot see cost nothing in either the main pass or the
+ * shadow pass.
+ */
+function chunkInstances(mesh: THREE.InstancedMesh): THREE.InstancedMesh[] {
+  if (mesh.count <= 8) return [mesh];
+
+  const m = new THREE.Matrix4();
+  const buckets = new Map<string, number[]>();
+  for (let i = 0; i < mesh.count; i++) {
+    mesh.getMatrixAt(i, m);
+    // elements[12] and [14] are the translation's x and z.
+    const key = `${Math.floor(m.elements[12] / CHUNK)},${Math.floor(m.elements[14] / CHUNK)}`;
+    const found = buckets.get(key);
+    if (found) found.push(i);
+    else buckets.set(key, [i]);
+  }
+  if (buckets.size < 2) return [mesh];
+
+  const colour = mesh.instanceColor;
+  const c = new THREE.Color();
+  const out: THREE.InstancedMesh[] = [];
+  for (const indices of buckets.values()) {
+    // Geometry and material are shared with the original, so a chunk costs
+    // nothing but its own instance buffers.
+    const chunk = new THREE.InstancedMesh(mesh.geometry, mesh.material, indices.length);
+    chunk.name = mesh.name;
+    chunk.castShadow = mesh.castShadow;
+    chunk.receiveShadow = mesh.receiveShadow;
+    if (colour) {
+      chunk.instanceColor = new THREE.InstancedBufferAttribute(
+        new Float32Array(indices.length * 3), 3,
+      );
+    }
+    indices.forEach((src, k) => {
+      mesh.getMatrixAt(src, m);
+      chunk.setMatrixAt(k, m);
+      if (colour) {
+        c.fromBufferAttribute(colour, src);
+        chunk.setColorAt(k, c);
+      }
+    });
+    chunk.instanceMatrix.needsUpdate = true;
+    if (chunk.instanceColor) chunk.instanceColor.needsUpdate = true;
+    chunk.computeBoundingSphere();
+    out.push(chunk);
+  }
+  return out;
+}
+
 
 export function buildScenery(
   track: Track,
@@ -577,7 +658,7 @@ export function buildScenery(
   }
 
   // ------------------------------------------------------------ billboards
-  const slogans = ['ROADBRUSH', 'NO RULES', 'RIDE OR DIE', 'FULL THROTTLE', 'STAY NASTY'];
+  const slogans = ['MOTORUSH', 'NO RULES', 'RIDE OR DIE', 'FULL THROTTLE', 'STAY NASTY'];
   const boardGeo = new THREE.PlaneGeometry(8, 4);
   const legGeo = new THREE.BoxGeometry(0.3, 5, 0.3);
   const legMat = new THREE.MeshStandardMaterial({ color: 0x3a3f47, roughness: 0.8 });
@@ -636,14 +717,35 @@ export function buildScenery(
   group.add(mountains);
   disposables.push(mtnGeo, mtnMat);
 
-  group.add(...instancedMeshes);
+  // Chunk last, once every instance is placed: the whole point is a tight
+  // bounding sphere per chunk, which needs the final positions.
+  const chunked = instancedMeshes.flatMap(chunkInstances);
+  group.add(...chunked);
+
+  // Cached so the per-frame cull is a flat loop over numbers, not a traverse.
+  const spheres = chunked.map((m) => {
+    if (!m.boundingSphere) m.computeBoundingSphere();
+    return m.boundingSphere!;
+  });
 
   return {
     group,
     mountains,
+    cull(cameraX: number, cameraZ: number, radius: number) {
+      for (let i = 0; i < chunked.length; i++) {
+        const c = spheres[i].center;
+        const dx = c.x - cameraX;
+        const dz = c.z - cameraZ;
+        // Compare squared distances, and let the chunk's own radius extend its
+        // reach so nothing pops while part of it is still in the clear.
+        const reach = radius + spheres[i].radius;
+        chunked[i].visible = dx * dx + dz * dz <= reach * reach;
+      }
+    },
     dispose() {
       for (const d of disposables) d.dispose();
       for (const m of instancedMeshes) m.dispose();
+      for (const m of chunked) m.dispose();
     },
   };
 }

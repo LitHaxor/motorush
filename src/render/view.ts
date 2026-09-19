@@ -22,6 +22,7 @@ import {
 import {
   buildScenery, createPickupMesh, createPedestrianMesh, buildCrossings,
   type SceneryHandle, type PickupRig, type PedestrianRig,
+  cullRadius,
 } from './scenery';
 import { createBikeRig, disposeBikeGeometry, type BikeRig } from './bikemesh';
 import { createRiderRig, poseRiding, poseRunning, type RiderRig } from './rider';
@@ -69,6 +70,8 @@ export class GameView {
 
   private composer!: EffectComposer;
   private bloom!: UnrealBloomPass;
+  /** How far scenery is worth drawing, set from the preset's fog density. */
+  private cullRadius = 2000;
   private readonly canvas: HTMLCanvasElement;
 
   private world: World;
@@ -170,6 +173,7 @@ export class GameView {
   private setupScene(): void {
     const p = this.preset;
     this.scene.fog = new THREE.FogExp2(p.fog, p.fogDensity);
+    this.cullRadius = cullRadius(p.fogDensity);
 
     this.sky = createSky(p);
     this.scene.add(this.sky.mesh);
@@ -206,7 +210,7 @@ export class GameView {
       this.scene.environmentIntensity = 0.65;
       pmrem.dispose();
     } catch (err) {
-      console.warn('[roadbrush] environment map unavailable', err);
+      console.warn('[motorush] environment map unavailable', err);
     }
 
     this.composer = new EffectComposer(this.renderer);
@@ -276,6 +280,7 @@ export class GameView {
       this.scene.add(this.sky.mesh);
       (this.scene.fog as THREE.FogExp2).color.set(this.preset.fog);
       (this.scene.fog as THREE.FogExp2).density = this.preset.fogDensity;
+      this.cullRadius = cullRadius(this.preset.fogDensity);
       this.sun.color.set(this.preset.sun);
       this.sun.intensity = this.preset.sunIntensity;
       this.hemi.color.set(this.preset.ambient);
@@ -389,7 +394,7 @@ export class GameView {
     if (this.frameEma > 25) {
       this.slowFrames++;
       if (this.slowFrames > 120) {
-        console.info('[roadbrush] dropping to low quality to hold framerate');
+        console.info('[motorush] dropping to low quality to hold framerate');
         this.quality = 'low';
         this.applyQuality();
       }
@@ -918,6 +923,7 @@ export class GameView {
     this.sky.mesh.position.copy(this.camera.position);
     if (this.scenery) {
       this.scenery.mountains.position.set(this.camera.position.x, 0, this.camera.position.z);
+      this.scenery.cull(this.camera.position.x, this.camera.position.z, this.cullRadius);
     }
 
     // Brake lights follow the player's actual input.
