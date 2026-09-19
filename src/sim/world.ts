@@ -12,7 +12,7 @@ import { stepRacer, NEUTRAL_INPUT } from './physics';
 import { resolveSwings, startAttack, canAttack } from './combat';
 import { TrafficSystem, collideWithTraffic, collideRacers } from './traffic';
 import { generatePickups, collectPickups } from './pickups';
-import { aiInput, createAiState, type AiWorldView } from './ai';
+import { aiInput, copParkInput, parkSpotBeside, createAiState, type AiWorldView } from './ai';
 import {
   buildBiomes, buildRoadLayout, citySegments,
   type BiomeSegment, type CitySegment, type DividedSection,
@@ -268,8 +268,9 @@ export class World implements AiWorldView {
       this.escapeTimer = Math.max(0, this.escapeTimer - dt * 0.5);
     }
 
-    // Go down with a patrol on you and it is over. They pull up, wait for you
-    // to pick the bike up, and nick you the moment you are back on it.
+    // Go down with a patrol on you and it is over. They break off the chase,
+    // pull in beside where you fell and wait; you get nicked the moment you
+    // are back on the bike, or eventually anyway if you just lie there.
     const gap = Math.abs(cop.s - player.s);
     if (player.state === 'down' && isRiding(cop) && gap < POLICE.arrestRange) {
       this.arrestPending = true;
@@ -362,6 +363,11 @@ export class World implements AiWorldView {
     inputs.set(this.player, isRiding(this.player) ? playerInput : NEUTRAL_INPUT);
     for (const r of field) {
       if (r === this.player) continue;
+      // A patrol with you on the ground stops racing and pulls over.
+      if (r === this.cop && this.arrestPending) {
+        inputs.set(r, copParkInput(r, this.player.s, parkSpotBeside(this.player, this.track)));
+        continue;
+      }
       inputs.set(r, aiInput(r, this, dt));
     }
 

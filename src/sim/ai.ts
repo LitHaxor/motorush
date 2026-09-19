@@ -3,7 +3,7 @@
 // Each AI re-plans its target lane a few times a second (staggered per rider so
 // the cost is spread across frames) and steers toward it in between.
 
-import { RIVALS, TRACK, BIKE } from './config';
+import { RIVALS, TRACK, BIKE, POLICE } from './config';
 import { clamp } from './mathx';
 import { isRiding, speedCap } from './racer';
 import { canAttack, startAttack } from './combat';
@@ -15,6 +15,45 @@ const LANE_CANDIDATES = [-7.2, -4.6, -2.1, 0, 2.1, 4.6, 7.2];
 const PLAN_INTERVAL = 0.22;
 /** How far ahead the AI reads the road layout, in metres. */
 const LOOKAHEAD = 110;
+
+/**
+ * Where a patrol pulls in beside a rider who has gone down: off to their
+ * right, or their left if the right is off the tarmac. Falls back to the
+ * rider's own line when there is nowhere to pull in at all, which is better
+ * than parking in a ditch.
+ */
+export function parkSpotBeside(rider: Racer, track: Track): number {
+  for (const side of [1, -1]) {
+    const lateral = rider.lateral + side * POLICE.parkOffset;
+    if (!track.isOffRoad(lateral, rider.s)) return lateral;
+  }
+  return rider.lateral;
+}
+
+/**
+ * Pull over and stop. A patrol that has put you on the ground stops chasing:
+ * it pulls up beside the crash, kills its speed and sits there. Without this
+ * the cop stayed on the racing AI and carried on down the road while the
+ * arrest ran off a timer somewhere behind it.
+ */
+export function copParkInput(cop: Racer, targetS: number, targetLateral: number): RacerInput {
+  const ahead = targetS - cop.s;
+  const steer = clamp((targetLateral - cop.lateral) * 0.6, -1, 1);
+  // Creep the last few metres, then stand on the brakes. The gate on current
+  // speed is the whole trick: throttle is a fraction of top speed rather than
+  // a force, so an ungated 0.3 does not mean "roll gently", it means "settle
+  // at 0.3 of a superbike" - the patrol would pull away from the crash at
+  // 75 km/h. Pulsing it under a walking pace is what actually creeps.
+  // There is no reverse, so an overshoot just parks a little further on.
+  const creeping = ahead > POLICE.parkTolerance && cop.speed < POLICE.parkCreepSpeed;
+  return {
+    throttle: creeping ? 0.12 : 0,
+    brake: creeping ? 0 : 1,
+    steer,
+    attackLeft: false,
+    attackRight: false,
+  };
+}
 
 /** The slice of the World the AI is allowed to see. */
 export interface AiWorldView {

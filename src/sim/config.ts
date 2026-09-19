@@ -251,8 +251,25 @@ export const POLICE = {
   arrestRange: 14,
   /** Distance at which the HUD starts warning you they are right there. */
   dangerRange: 60,
-  /** How long they will stand over a downed rider before cuffing them anyway. */
-  arrestPatience: 4,
+  /**
+   * How far to the side of a downed rider the patrol pulls in. Their right
+   * first; if that is off the tarmac, their left.
+   */
+  parkOffset: 2.8,
+  /** Close enough to the spot to stand on the brakes and stay there. */
+  parkTolerance: 2.0,
+  /** Walking pace: how fast they creep the last few metres to the rider. */
+  parkCreepSpeed: 3,
+  /**
+   * How long they will stand over a downed rider before cuffing them anyway.
+   * Long enough that the arrest normally lands when you get back to the bike
+   * rather than on a timer: picking yourself up, running back, hauling the
+   * bike upright and swinging a leg over is roughly four seconds at a gentle
+   * crash and over five after a fast one. At the old four this always fired
+   * while you were still face down, which read as an instant bust rather than
+   * a patrol waiting you out.
+   */
+  arrestPatience: 9,
   /** Lead you must hold, for `escapeTime`, to lose them. */
   escapeDistance: 185,
   escapeTime: 2.6,

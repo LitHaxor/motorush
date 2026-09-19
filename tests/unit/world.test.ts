@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { World, COUNTDOWN_TIME } from '../../src/sim/world';
 import { knockDown } from '../../src/sim/racer';
-import { POLICE, DIFFICULTY } from '../../src/sim/config';
+import { POLICE, DIFFICULTY, CRASH } from '../../src/sim/config';
+import { parkSpotBeside } from '../../src/sim/ai';
 import type { DifficultyKey, RacerInput, SimEvent } from '../../src/sim/types';
 
 const DT = 1 / 60;
@@ -391,5 +392,92 @@ describe('World: police pressure by difficulty', () => {
     };
     expect(gain('hard')).toBeGreaterThan(gain('normal'));
     expect(gain('normal')).toBeGreaterThan(gain('easy'));
+  });
+});
+
+describe('World: a patrol parks at the crash', () => {
+  /** Put the player down with a cop right on them, and hold them down. */
+  function downedWithCop(seed = 11) {
+    const w = new World({ seed });
+    startRace(w);
+    const cop = w.spawnCop();
+    cop.s = w.player.s - 5;
+    cop.lateral = w.player.lateral;
+    cop.speed = 45;
+    knockDown(w.player, 1);
+    return { w, cop };
+  }
+
+  it('stops chasing and pulls up rather than riding on past', () => {
+    const { w, cop } = downedWithCop();
+    for (let i = 0; i < 60 * 3 && !w.isOver; i++) {
+      // Keep the player on the deck so the arrest does not end it early.
+      w.player.state = 'down';
+      w.player.health = 100;
+      w.step(DT, INPUT({ throttle: 0 }));
+    }
+    expect(w.arrestPending).toBe(true);
+    expect(cop.speed).toBeLessThan(3);
+    // Parked beside the rider, not a hundred metres up the road.
+    expect(Math.abs(cop.s - w.player.s)).toBeLessThan(45);
+  });
+
+  it('pulls in to one side instead of stopping on top of the rider', () => {
+    const { w, cop } = downedWithCop();
+    for (let i = 0; i < 60 * 3 && !w.isOver; i++) {
+      w.player.state = 'down';
+      w.player.health = 100;
+      w.step(DT, INPUT({ throttle: 0 }));
+    }
+    expect(Math.abs(cop.lateral - w.player.lateral)).toBeGreaterThan(1.2);
+  });
+
+  it('parks on the rider’s right when there is road on that side', () => {
+    const w = new World({ seed: 11 });
+    startRace(w);
+    w.player.lateral = 0;
+    const spot = parkSpotBeside(w.player, w.track);
+    expect(spot).toBeGreaterThan(0);
+    expect(w.track.isOffRoad(spot, w.player.s)).toBe(false);
+  });
+
+  it('takes the left when the right would put it off the tarmac', () => {
+    const w = new World({ seed: 11 });
+    startRace(w);
+    w.player.lateral = w.track.edgeAt(w.player.s) - 0.4;
+    const spot = parkSpotBeside(w.player, w.track);
+    expect(spot).toBeLessThan(w.player.lateral);
+    expect(w.track.isOffRoad(spot, w.player.s)).toBe(false);
+  });
+
+  it('creeps rather than riding off when it starts short of the spot', () => {
+    // The gap the first attempt fell through: every other case starts the
+    // patrol fast, so it only ever exercised braking. Starting it stopped a
+    // few metres short is what exposes the throttle being a fraction of top
+    // speed - an ungated creep pulled away from the crash at 75 km/h.
+    const { w, cop } = downedWithCop();
+    cop.speed = 0;
+    cop.s = w.player.s - 6;
+    let fastest = 0;
+    for (let i = 0; i < 60 * 4 && !w.isOver; i++) {
+      w.player.state = 'down';
+      w.player.health = 100;
+      w.player.speed = 0;
+      w.step(DT, INPUT({ throttle: 0 }));
+      fastest = Math.max(fastest, cop.speed);
+    }
+    expect(fastest).toBeLessThan(POLICE.parkCreepSpeed * 2);
+    expect(Math.abs(cop.s - w.player.s)).toBeLessThan(10);
+  });
+
+  it('waits long enough for you to get back to the bike', () => {
+    // The recovery sequence - stand, run back, lift, mount - must fit inside
+    // the patrol's patience, or the arrest always lands while you are still
+    // on the ground and never reads as them waiting you out.
+    const longest = CRASH.standTime
+      + CRASH.throwMax / CRASH.riderRunSpeed
+      + CRASH.liftTime
+      + CRASH.mountTime;
+    expect(POLICE.arrestPatience).toBeGreaterThan(longest);
   });
 });
