@@ -129,10 +129,12 @@ export function makeTerrainElevation(biomes: readonly BiomeSegment[]): ElevateFn
     const hills = blendAt(biomes, s, 'hills');
     const paddy = blendAt(biomes, s, 'paddy');
     const jungle = blendAt(biomes, s, 'jungle');
+    const mountain = blendAt(biomes, s, 'mountain');
+    const village = blendAt(biomes, s, 'village');
     const { side, blend: coast } = coastAt(biomes, s);
 
-    // Country rolling, flattened through town and the paddies.
-    let h = rolling * (1 - city) * (1 - paddy * 0.9);
+    // Country rolling, flattened through town, the paddies and the village.
+    let h = rolling * (1 - city) * (1 - paddy * 0.9) * (1 - village * 0.55);
 
     // Hills: the same profile, considerably louder, plus a second ridge.
     if (hills > 0) {
@@ -147,6 +149,16 @@ export function makeTerrainElevation(biomes: readonly BiomeSegment[]): ElevateFn
     if (jungle > 0) {
       const d = Math.max(0, Math.abs(lateral) - 15);
       h += Math.min(1, d / 30) * 6 * jungle;
+    }
+
+    // Mountains: steep walls rising close to the road, so it reads as a pass
+    // cut through rather than open hills.
+    if (mountain > 0) {
+      const d = Math.max(0, Math.abs(lateral) - 20);
+      const climb = Math.min(1, d / 55);
+      const wall = climb * climb * (46 + Math.sin(s * 0.0035 + 0.7) * 26);
+      const ridge = Math.sin(s * 0.0021 + 2.4) * 22 + Math.sin(lateral * 0.006) * 14;
+      h += (wall + ridge * climb) * mountain;
     }
 
     if (paddy > 0) h += (paddyProfile(s, lateral) - h) * paddy;

@@ -37,10 +37,12 @@ describe('biome layout', () => {
 
   it('produces every biome type across enough seeds', () => {
     const seen = new Set<string>();
-    for (let seed = 1; seed < 40; seed++) {
+    for (let seed = 1; seed < 60; seed++) {
       for (const seg of buildBiomes(9000, makeRng(seed))) seen.add(seg.kind);
     }
-    expect([...seen].sort()).toEqual(['city', 'coast', 'hills', 'jungle', 'paddy']);
+    expect([...seen].sort()).toEqual(
+      ['city', 'coast', 'hills', 'jungle', 'mountain', 'paddy', 'village'],
+    );
   });
 
   it('leaves a short track as open country', () => {
@@ -70,7 +72,8 @@ describe('biome layout', () => {
   it('keeps the blend inside 0..1 everywhere', () => {
     const segs = buildBiomes(6000, makeRng(5));
     for (let s = 0; s < 6000; s += 25) {
-      for (const kind of ['city', 'jungle', 'hills', 'coast', 'paddy'] as const) {
+      const kinds = ['city', 'jungle', 'hills', 'coast', 'paddy', 'mountain', 'village'] as const;
+      for (const kind of kinds) {
         const v = blendAt(segs, s, kind);
         expect(v).toBeGreaterThanOrEqual(0);
         expect(v).toBeLessThanOrEqual(1);

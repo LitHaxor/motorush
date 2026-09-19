@@ -6,7 +6,9 @@
 
 import type { Rng } from './types';
 
-export type BiomeKind = 'country' | 'city' | 'jungle' | 'hills' | 'coast' | 'paddy';
+export type BiomeKind =
+  | 'country' | 'city' | 'jungle' | 'hills' | 'coast' | 'paddy'
+  | 'mountain' | 'village';
 
 export interface BiomeSegment {
   from: number;
@@ -29,6 +31,10 @@ const FEATURES: BiomeSpec[] = [
   { kind: 'hills', weight: 0.9, length: [420, 780] },
   { kind: 'coast', weight: 0.8, length: [460, 820] },
   { kind: 'paddy', weight: 0.7, length: [320, 560] },
+  // A proper mountain pass: the road threads a valley with walls either side.
+  { kind: 'mountain', weight: 0.85, length: [520, 900] },
+  // A handful of houses and a farm, not a town.
+  { kind: 'village', weight: 0.8, length: [260, 480] },
 ];
 
 export const BIOME = {

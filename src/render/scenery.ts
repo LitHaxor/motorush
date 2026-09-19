@@ -63,6 +63,10 @@ export function buildScenery(
     coast: ['broadleaf', 'oak', 'bush', 'bush'],
     paddy: ['bush', 'broadleaf'],
     city: ['oak', 'maple', 'bush'],
+    // High ground: conifers thinning out as the walls climb.
+    mountain: ['conifer', 'conifer', 'conifer', 'bush'],
+    // Hedgerows and orchard trees around the houses.
+    village: ['oak', 'maple', 'broadleaf', 'bush', 'bush'],
   };
 
   /** How thickly trees are planted, and how far back from the road. */
@@ -73,6 +77,8 @@ export function buildScenery(
     coast: { skip: 0.55, reach: 45, height: [9, 17] },
     paddy: { skip: 0.82, reach: 60, height: [5, 11] },
     city: { skip: 0.85, reach: 0, height: [5, 8] },
+    mountain: { skip: 0.3, reach: 150, height: [7, 18] },
+    village: { skip: 0.55, reach: 75, height: [6, 14] },
   };
 
   const bySpecies = new Map<TreeSpecies, number[]>();
@@ -490,6 +496,85 @@ export function buildScenery(
     instancedMeshes.push(mesh);
     disposables.push(geo, mat, tex);
   });
+
+  // --------------------------------------------------------------- village
+  // A handful of houses and a barn set back behind their gardens - scattered,
+  // not packed shoulder to shoulder the way a city block is.
+  const villages = biomes.filter((b) => b.kind === 'village');
+  if (villages.length) {
+    const HOUSES = [
+      { w: 7, d: 6, h: 4.2, roof: 2.6, wall: '#c9bda8', trim: '#6d6251', roofColour: 0x8a4032 },
+      { w: 9, d: 7, h: 5.4, roof: 3.2, wall: '#d6cdbb', trim: '#5f574a', roofColour: 0x6d4a3a },
+      { w: 11, d: 8, h: 6, roof: 3.6, wall: '#b6a893', trim: '#544c40', roofColour: 0x4a4a52 },
+      { w: 4.5, d: 4, h: 2.9, roof: 1.8, wall: '#c2b6a2', trim: '#5c5447', roofColour: 0x5a4a3e },
+    ];
+
+    const wallSlots: THREE.Matrix4[][] = HOUSES.map(() => []);
+    const roofSlots: THREE.Matrix4[][] = HOUSES.map(() => []);
+    const hm = new THREE.Matrix4();
+    const hq = new THREE.Quaternion();
+    const hv = new THREE.Vector3();
+    const hs = new THREE.Vector3();
+    const hup = new THREE.Vector3(0, 1, 0);
+
+    for (const seg of villages) {
+      for (const sign of [-1, 1]) {
+        let s = seg.from + rng.range(10, 40);
+        while (s < seg.to - 20) {
+          const idx = rng.int(0, HOUSES.length - 1);
+          const house = HOUSES[idx];
+          const scale = rng.range(0.85, 1.2);
+          const setback = edgeAt(s) + rng.range(7, 22);
+          const pos = groundAt(track, s, sign * setback, elevate);
+          // Turned roughly toward the road, but not regimented.
+          const facing = track.headingAt(s) + (sign > 0 ? Math.PI / 2 : -Math.PI / 2)
+            + rng.range(-0.35, 0.35);
+
+          hq.setFromAxisAngle(hup, facing);
+          hs.setScalar(scale);
+          hv.set(pos.x, pos.y + (house.h * scale) / 2, pos.z);
+          wallSlots[idx].push(hm.compose(hv, hq, hs).clone());
+          hv.set(pos.x, pos.y + (house.h + house.roof * 0.5) * scale, pos.z);
+          roofSlots[idx].push(hm.compose(hv, hq, hs).clone());
+
+          s += house.w * scale + rng.range(14, 46);
+        }
+      }
+    }
+
+    HOUSES.forEach((house, i) => {
+      if (!wallSlots[i].length) return;
+      const tex = makeFacadeTexture({
+        floors: house.h > 5 ? 2 : 1,
+        bays: 3,
+        wall: house.wall,
+        trim: house.trim,
+        litChance: preset.key === 'duskrun' ? 0.55 : 0.12,
+      });
+      const wallMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 });
+      const wallGeo = new THREE.BoxGeometry(house.w, house.h, house.d);
+      const walls = new THREE.InstancedMesh(wallGeo, wallMat, wallSlots[i].length);
+      walls.castShadow = true;
+      walls.receiveShadow = true;
+      wallSlots[i].forEach((m, k) => walls.setMatrixAt(k, m));
+      walls.instanceMatrix.needsUpdate = true;
+      walls.frustumCulled = false;
+      instancedMeshes.push(walls);
+
+      // Hipped roof: a four-sided pyramid sitting on the walls.
+      const roofMat = new THREE.MeshStandardMaterial({ color: house.roofColour, roughness: 0.85 });
+      const roofGeo = new THREE.ConeGeometry(Math.max(house.w, house.d) * 0.78, house.roof, 4);
+      roofGeo.rotateY(Math.PI / 4);
+      const roofs = new THREE.InstancedMesh(roofGeo, roofMat, roofSlots[i].length);
+      roofs.castShadow = true;
+      roofSlots[i].forEach((m, k) => roofs.setMatrixAt(k, m));
+      roofs.instanceMatrix.needsUpdate = true;
+      roofs.frustumCulled = false;
+      instancedMeshes.push(roofs);
+
+      disposables.push(wallGeo, wallMat, tex, roofGeo, roofMat);
+    });
+  }
 
   // ------------------------------------------------------------ billboards
   const slogans = ['ROADBRUSH', 'NO RULES', 'RIDE OR DIE', 'FULL THROTTLE', 'STAY NASTY'];
