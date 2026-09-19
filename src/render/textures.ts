@@ -491,3 +491,131 @@ export function makeContactShadowTexture({ size = 128 } = {}): THREE.CanvasTextu
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
+
+/**
+ * Conifer foliage for crossed billboard planes.
+ *
+ * Each tier is laid down as a solid wedge first and only then detailed with
+ * needle sprays. Drawing the sprays alone leaves a spindly skeleton once the
+ * alpha test bites, because thin antialiased strokes are mostly partial alpha.
+ */
+export function makeConiferTexture({ width = 512, height = 768 } = {}): THREE.CanvasTexture {
+  const c = canvas(width, height);
+  const ctx = ctx2d(c);
+
+  const DARK = '#1e3a22';
+  const MID = '#2f5a33';
+  const LIGHT = '#477a41';
+  const TIP = '#67a052';
+
+  const tiers = 13;
+  const cx = width / 2;
+
+  /** Solid wedge for one tier, giving the tree its mass. */
+  const wedge = (y: number, half: number, drop: number, colour: string) => {
+    ctx.fillStyle = colour;
+    ctx.beginPath();
+    ctx.moveTo(cx, y - drop * 0.75);
+    ctx.lineTo(cx - half, y + drop);
+    // Ragged underside so the silhouette is not a clean triangle.
+    const steps = 9;
+    for (let i = 0; i <= steps; i++) {
+      const f = i / steps;
+      const x = cx - half + half * 2 * f;
+      const sag = Math.sin(f * Math.PI) * drop * 0.32;
+      const jag = (i % 2 === 0 ? 1 : -1) * drop * 0.16;
+      ctx.lineTo(x, y + drop - sag + jag);
+    }
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  /** Needle detail along a branch. */
+  const spray = (x: number, y: number, len: number, dir: number, colour: string, thick: number) => {
+    ctx.strokeStyle = colour;
+    ctx.lineCap = 'round';
+    const steps = Math.max(3, Math.floor(len / 9));
+    for (let i = 1; i <= steps; i++) {
+      const f = i / steps;
+      const px = x + dir * len * f;
+      const py = y + len * 0.36 * f;
+      const nl = 5 + (1 - f) * 9;
+      ctx.lineWidth = thick;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + dir * nl * 0.4, py + nl);
+      ctx.stroke();
+    }
+  };
+
+  for (let i = 0; i < tiers; i++) {
+    const t = i / (tiers - 1); // 0 at the bottom
+    const y = height * (0.95 - t * 0.88);
+    const half = width * 0.46 * Math.pow(1 - t, 1.15) + width * 0.02;
+    const drop = height * 0.055 * (1 - t * 0.45);
+
+    // Back of the tier in shadow, front catching the light.
+    wedge(y + drop * 0.35, half, drop, DARK);
+    wedge(y, half * 0.9, drop * 0.92, MID);
+    wedge(y - drop * 0.22, half * 0.66, drop * 0.78, LIGHT);
+
+    // Needle detail out along the branches.
+    const sprays = Math.max(3, Math.floor(half / 20));
+    for (let s = 0; s < sprays; s++) {
+      const f = (s + 0.5) / sprays;
+      const len = half * (0.5 + f * 0.55);
+      const yy = y + (Math.random() - 0.4) * drop * 0.5;
+      spray(cx, yy, len, -1, DARK, 3);
+      spray(cx, yy, len, 1, DARK, 3);
+      spray(cx, yy - drop * 0.25, len * 0.8, -1, TIP, 2);
+      spray(cx, yy - drop * 0.25, len * 0.8, 1, TIP, 2);
+    }
+  }
+
+  // Leader at the very top.
+  ctx.strokeStyle = MID;
+  ctx.lineWidth = 9;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx, height * 0.1);
+  ctx.lineTo(cx, height * 0.025);
+  ctx.stroke();
+
+  // Bare trunk below the lowest branches.
+  ctx.strokeStyle = '#3a2c1f';
+  ctx.lineWidth = width * 0.04;
+  ctx.beginPath();
+  ctx.moveTo(cx, height);
+  ctx.lineTo(cx, height * 0.88);
+  ctx.stroke();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  tex.premultiplyAlpha = false;
+  return tex;
+}
+
+/** Bark for the trunk: vertical fissures in brown-grey. */
+export function makeBarkTexture({ size = 256 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+  ctx.fillStyle = '#4a3a2c';
+  ctx.fillRect(0, 0, size, size);
+  for (let i = 0; i < 90; i++) {
+    ctx.globalAlpha = 0.1 + Math.random() * 0.35;
+    ctx.strokeStyle = Math.random() > 0.5 ? '#2e241a' : '#63513e';
+    ctx.lineWidth = 1 + Math.random() * 5;
+    let x = Math.random() * size;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    for (let y = 0; y < size; y += 26) {
+      x += (Math.random() - 0.5) * 9;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  grain(ctx, size, size, 20);
+  return finish(c, { repeatX: 2, repeatY: 3 });
+}

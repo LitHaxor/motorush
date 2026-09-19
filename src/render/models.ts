@@ -8,14 +8,30 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
+/**
+ * The roadside roster. Conifers dominate deliberately - they suit the setting
+ * and give the long sightlines their vertical rhythm - with broadleaf types
+ * mixed in so the verge is not a monoculture.
+ */
 export const TREE_MODELS = [
-  'tree_pineTallA',
-  'tree_pineDefaultA',
-  'tree_pineRoundA',
-  'tree_default',
-  'tree_oak',
-  'tree_tall',
+  // Conifers
+  'tree_pineTallA', 'tree_pineTallB', 'tree_pineTallC', 'tree_pineTallD',
+  'tree_pineTallA_detailed', 'tree_pineTallB_detailed',
+  'tree_pineTallC_detailed', 'tree_pineTallD_detailed',
+  'tree_pineRoundA', 'tree_pineRoundB', 'tree_pineRoundC',
+  'tree_pineRoundD', 'tree_pineRoundE', 'tree_pineRoundF',
+  'tree_pineDefaultA', 'tree_pineDefaultB',
+  'tree_pineGroundA', 'tree_pineGroundB',
+  'tree_pineSmallA', 'tree_pineSmallB', 'tree_pineSmallC', 'tree_pineSmallD',
+  // Broadleaf
+  'tree_default', 'tree_default_dark',
+  'tree_detailed', 'tree_detailed_dark',
+  'tree_oak', 'tree_oak_dark',
+  'tree_tall', 'tree_thin', 'tree_fat', 'tree_simple', 'tree_small', 'tree_cone',
 ] as const;
+
+/** Index into TREE_MODELS at which the broadleaf types start. */
+export const FIRST_BROADLEAF = 22;
 
 export const ROCK_MODELS = ['rock_largeA', 'rock_smallB', 'rock_tallC'] as const;
 

@@ -9,7 +9,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import type { World } from '../sim/world';
 import type { Car, Racer, RacerInput, SimEvent } from '../sim/types';
-import { clamp, damp } from '../sim/mathx';
+import { clamp, damp, makeRng } from '../sim/mathx';
 import { BIKE, COMBAT } from '../sim/config';
 import { swingProgress } from '../sim/combat';
 
@@ -27,6 +27,7 @@ import { createCarMesh, createCarFromModel, disposeCarGeometry, type CarRig } fr
 import { ParticleField, CameraShake } from './effects';
 import { loadGroundTextures, type GroundTextures } from './assets';
 import { loadModels, CAR_MODELS, type ModelLibrary } from './models';
+import { loadFoliageAtlas, buildTreeVariants, type TreeVariant } from './foliage';
 
 export type QualityLevel = 'low' | 'high';
 
@@ -102,6 +103,7 @@ export class GameView {
 
   private textures!: GroundTextures;
   private models!: ModelLibrary;
+  private treeVariants: TreeVariant[] = [];
 
   // Scratch objects reused every frame to keep the GC quiet.
   private readonly tmpVec = new THREE.Vector3();
@@ -139,12 +141,14 @@ export class GameView {
     const view = new GameView(canvas, world, opts);
     const preset = view.preset;
     // Ground textures and props load in parallel; both fall back gracefully.
-    const [textures, models] = await Promise.all([
+    const [textures, models, foliage] = await Promise.all([
       loadGroundTextures(view.renderer, { grass: preset.grass, grassAccent: preset.grassAccent }),
       loadModels(),
+      loadFoliageAtlas(),
     ]);
     view.textures = textures;
     view.models = models;
+    view.treeVariants = buildTreeVariants(foliage, makeRng(world.seed ^ 0x5eed));
     view.setupScene();
     view.buildWorld();
     (window as unknown as { __rbView?: GameView }).__rbView = view;
@@ -209,7 +213,10 @@ export class GameView {
     this.road = buildRoad(world.track, this.preset, this.textures, world.citySegments);
     this.scene.add(this.road.group);
 
-    this.scenery = buildScenery(world.track, world.rng, this.preset, this.models, world.citySegments);
+    this.scenery = buildScenery(
+      world.track, world.rng, this.preset, this.models,
+      world.citySegments, this.treeVariants,
+    );
     this.scene.add(this.scenery.group);
 
     this.trackProps = new THREE.Group();

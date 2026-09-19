@@ -10,6 +10,16 @@ attribution, but the sources deserve it anyway.
 | Asphalt (road surface)     | [Poly Haven — Asphalt Track](https://polyhaven.com/a/asphalt_track) | CC0 |
 | Gravel (shoulders)         | [Poly Haven — Bicolour Gravel](https://polyhaven.com/a/bicolour_gravel) | CC0 |
 | Grass (terrain)            | [ambientCG — Grass005](https://ambientcg.com/view?id=Grass005) | CC0 |
+| Conifer branches (trees)   | [ambientCG — LeafSet019](https://ambientcg.com/view?id=LeafSet019) | CC0 |
+| Broadleaf leaves (trees)   | [ambientCG — LeafSet005](https://ambientcg.com/view?id=LeafSet005) | CC0 |
+
+### Trees
+
+Whole-tree cut-outs are not something the CC0 libraries carry, so the trees are
+composited at runtime: real photographed conifer sprays and broadleaf sprigs
+are drawn tier by tier into a tree-shaped billboard (`src/render/foliage.ts`),
+then rendered on crossed alpha-cut planes. Twelve canopy variants, tinted
+per-instance, cost two draw calls each for the whole track.
 
 Each set ships as colour + normal + a packed AO/roughness/metalness map,
 downscaled and re-encoded for the web (~3.8 MB total).

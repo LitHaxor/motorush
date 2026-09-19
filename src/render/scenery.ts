@@ -7,9 +7,13 @@ import type { Track } from '../sim/track';
 import type { Rng, PickupKind } from '../sim/types';
 import type { SkyPreset } from './palette';
 import { makeTerrainElevation, ribbonGeometry } from './roadmesh';
-import { makeSignTexture, makeFacadeTexture, makeCheckerTexture, makeZebraTexture } from './textures';
-import { instanceModel, type ModelLibrary } from './models';
+import {
+  makeSignTexture, makeFacadeTexture, makeCheckerTexture, makeZebraTexture,
+} from './textures';
+import { instanceModel, FIRST_BROADLEAF, type ModelLibrary } from './models';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { inCity, type CitySegment } from '../sim/city';
+import type { TreeVariant } from './foliage';
 
 export interface SceneryHandle {
   group: THREE.Group;
@@ -36,88 +40,102 @@ export function buildScenery(
   rng: Rng,
   preset: SkyPreset,
   models: ModelLibrary,
-  city: readonly CitySegment[],
+  citySegments: readonly CitySegment[],
+  treeVariants: readonly TreeVariant[] = [],
 ): SceneryHandle {
   const group = new THREE.Group();
   group.name = 'scenery';
   const disposables: { dispose(): void }[] = [];
   const edge = track.halfWidth + track.shoulder;
-  const elevate = makeTerrainElevation(city);
+  const elevate = makeTerrainElevation(citySegments);
 
   // ---------------------------------------------------------------- trees
-  const treePlacements: { s: number; lateral: number; scale: number; rot: number }[] = [];
-  for (let s = 20; s < track.length; s += rng.range(9, 20)) {
-    const urban = inCity(city, s);
-    for (const sign of [-1, 1]) {
-      if (rng.chance(urban ? 0.85 : 0.28)) continue;
-      // In town the only greenery is the odd street tree close to the kerb.
-      const lateral = urban
-        ? sign * rng.range(edge + 1.5, edge + 4)
-        : sign * rng.range(edge + 3.5, 85);
-      treePlacements.push({
-        s,
-        lateral,
-        scale: urban ? rng.range(0.5, 0.8) : rng.range(0.8, 1.5),
-        rot: rng() * Math.PI * 2,
-      });
+  // Photographic billboards: each tree is two crossed alpha-cut planes showing
+  // a canopy composited from real branch photography. Two draw calls per
+  // variant covers the whole track, however many trees are on it.
+  const city = citySegments;
+  interface TreeSpot { s: number; lateral: number; height: number; rot: number; kind: number; tint: number }
+  const treePlacements: TreeSpot[] = [];
+  const variantCount = treeVariants.length;
+  const conifers = treeVariants.filter((v) => v.conifer).length;
+
+  if (variantCount > 0) {
+    for (let s = 20; s < track.length; s += rng.range(7, 15)) {
+      const urban = inCity(city, s);
+      for (const sign of [-1, 1]) {
+        if (rng.chance(urban ? 0.85 : 0.18)) continue;
+        const lateral = urban
+          ? sign * rng.range(edge + 1.5, edge + 4)
+          : sign * rng.range(edge + 3, 100);
+        // Conifers dominate open country; town gets the broadleaf.
+        const broadleaf = urban || rng.chance(0.3);
+        const kind = broadleaf && conifers < variantCount
+          ? conifers + rng.int(0, variantCount - conifers - 1)
+          : rng.int(0, Math.max(0, conifers - 1));
+        treePlacements.push({
+          s,
+          lateral,
+          height: urban ? rng.range(5, 8) : rng.range(8, 21),
+          rot: rng() * Math.PI,
+          // Subtle per-tree tint so no two neighbours match exactly.
+          tint: rng.range(0.78, 1.12),
+        kind });
+      }
     }
   }
 
   const instancedMeshes: THREE.InstancedMesh[] = [];
 
-  if (models.ok && models.trees.length) {
-    // Spread placements across the available tree models, then instance each
-    // model once for the whole track.
-    const buckets: THREE.Matrix4[][] = models.trees.map(() => []);
-    const m4 = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const v = new THREE.Vector3();
-    const sc = new THREE.Vector3();
-    treePlacements.forEach((t, i) => {
-      const idx = i % models.trees.length;
-      const model = models.trees[idx];
-      const pos = groundAt(track, t.s, t.lateral, elevate);
-      // Kenney trees are authored a few units tall; normalise to real height.
-      const targetHeight = rng.range(6, 12) * t.scale;
-      const unit = model.size.y > 0.001 ? targetHeight / model.size.y : 1;
-      v.set(pos.x, pos.y, pos.z);
-      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), t.rot);
-      sc.setScalar(unit);
-      buckets[idx].push(m4.compose(v, q, sc).clone());
+  if (variantCount > 0 && treePlacements.length) {
+    const buckets: TreeSpot[][] = treeVariants.map(() => []);
+    for (const spot of treePlacements) {
+      buckets[Math.min(spot.kind, variantCount - 1)].push(spot);
+    }
+
+    const tintColour = new THREE.Color();
+    treeVariants.forEach((variant, vi) => {
+      const spots = buckets[vi];
+      if (!spots.length) return;
+
+      // Two planes crossing through the trunk.
+      const blades: THREE.BufferGeometry[] = [];
+      for (let i = 0; i < 2; i++) {
+        const plane = new THREE.PlaneGeometry(1 / variant.aspect, 1, 1, 1);
+        plane.translate(0, 0.5, 0);
+        plane.rotateY((i / 2) * Math.PI);
+        blades.push(plane);
+      }
+      const geo = mergeGeometries(blades, false) ?? blades[0];
+      for (const b of blades) if (b !== geo) b.dispose();
+
+      const mat = new THREE.MeshStandardMaterial({
+        map: variant.texture,
+        // Alpha test, not blending: nothing to sort, and depth still writes so
+        // trees occlude each other correctly.
+        alphaTest: 0.28,
+        side: THREE.DoubleSide,
+        roughness: 0.95,
+        metalness: 0,
+      });
+
+      const mesh = new THREE.InstancedMesh(geo, mat, spots.length);
+      mesh.castShadow = false; // alpha-tested shadows need a custom depth pass
+      mesh.frustumCulled = false;
+      spots.forEach((spot, i) => {
+        const pos = groundAt(track, spot.s, spot.lateral, elevate);
+        dummy.position.copy(pos);
+        dummy.rotation.set(0, spot.rot, 0);
+        dummy.scale.setScalar(spot.height);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        tintColour.setRGB(spot.tint * 0.96, spot.tint, spot.tint * 0.9);
+        mesh.setColorAt(i, tintColour);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      instancedMeshes.push(mesh);
+      disposables.push(geo, mat, variant.texture);
     });
-    models.trees.forEach((model, i) => {
-      if (!buckets[i].length) return;
-      instancedMeshes.push(...instanceModel(model, buckets[i]));
-    });
-  } else {
-    // Primitive fallback: cone on a cylinder.
-    const trunkGeo = new THREE.CylinderGeometry(0.22, 0.34, 3.2, 6);
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.95 });
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, treePlacements.length);
-    trunks.castShadow = true;
-    const foliageGeo = new THREE.ConeGeometry(2.1, 6.2, 7);
-    const foliageMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(preset.grass).multiplyScalar(1.25),
-      roughness: 0.92,
-      flatShading: true,
-    });
-    const foliage = new THREE.InstancedMesh(foliageGeo, foliageMat, treePlacements.length);
-    foliage.castShadow = true;
-    treePlacements.forEach((t, i) => {
-      const pos = groundAt(track, t.s, t.lateral, elevate);
-      dummy.position.set(pos.x, pos.y + 1.6 * t.scale, pos.z);
-      dummy.rotation.set(0, t.rot, 0);
-      dummy.scale.setScalar(t.scale);
-      dummy.updateMatrix();
-      trunks.setMatrixAt(i, dummy.matrix);
-      dummy.position.y = pos.y + (3.2 + 2.4) * t.scale;
-      dummy.updateMatrix();
-      foliage.setMatrixAt(i, dummy.matrix);
-    });
-    trunks.instanceMatrix.needsUpdate = true;
-    foliage.instanceMatrix.needsUpdate = true;
-    instancedMeshes.push(trunks, foliage);
-    disposables.push(trunkGeo, trunkMat, foliageGeo, foliageMat);
   }
 
   // ---------------------------------------------------------------- rocks
