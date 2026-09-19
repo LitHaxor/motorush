@@ -13,6 +13,8 @@ import { resolveSwings, startAttack, canAttack } from './combat';
 import { TrafficSystem, collideWithTraffic, collideRacers } from './traffic';
 import { generatePickups, collectPickups } from './pickups';
 import { aiInput, createAiState, type AiWorldView } from './ai';
+import { buildCitySegments, type CitySegment } from './city';
+import { generatePedestrians, stepPedestrians, type Crossing, type Pedestrian } from './pedestrians';
 import type {
   DifficultyKey,
   EndReason,
@@ -47,10 +49,14 @@ export class World implements AiWorldView {
   readonly rng: Rng;
   readonly raceDistance: number;
   readonly aggressionScale: number;
+  readonly policeScale: number;
 
   readonly track: Track;
   readonly traffic: TrafficSystem;
   readonly pickups: Pickup[];
+  readonly citySegments: CitySegment[];
+  readonly crossings: Crossing[];
+  readonly pedestrians: Pedestrian[];
 
   readonly player: Racer;
   readonly rivals: Racer[] = [];
@@ -62,7 +68,10 @@ export class World implements AiWorldView {
   elapsed = 0;
   heat = 0;
   bustProgress = 0;
+  /** Set when a patrol has reached you while you are down. */
+  arrestPending = false;
   escapeTimer = 0;
+  arrestTimer = 0;
   copsSeen = 0;
   result: RaceResult | null = null;
   standings: Racer[] = [];
@@ -78,10 +87,15 @@ export class World implements AiWorldView {
     this.rng = makeRng(seed);
     this.raceDistance = preset.distance;
     this.aggressionScale = preset.aggression;
+    this.policeScale = preset.police;
 
     this.track = new Track({ seed, length: this.raceDistance + TRACK.runout });
     this.traffic = new TrafficSystem(this.track, this.rng, { density: preset.traffic });
     this.pickups = generatePickups(this.track, this.rng, this.raceDistance);
+    this.citySegments = buildCitySegments(this.track.length, this.rng);
+    const crowd = generatePedestrians(this.citySegments, this.rng);
+    this.crossings = crowd.crossings;
+    this.pedestrians = crowd.pedestrians;
 
     // --- the field ------------------------------------------------------
     this.player = createRacer({
@@ -159,7 +173,7 @@ export class World implements AiWorldView {
   // ---------------------------------------------------------------- police
   addHeat(amount: number): void {
     if (this.cop) return;
-    this.heat = clamp(this.heat + amount, 0, POLICE.heatMax);
+    this.heat = clamp(this.heat + amount * this.policeScale, 0, POLICE.heatMax);
   }
 
   spawnCop(): Racer {
@@ -190,7 +204,8 @@ export class World implements AiWorldView {
     if (!this.cop) {
       const over = player.speed - POLICE.speedThreshold;
       if (over > 0 && isRiding(player)) {
-        this.heat = clamp(this.heat + (over / 20) * POLICE.speedHeat * dt, 0, POLICE.heatMax);
+        const gain = (over / 20) * POLICE.speedHeat * this.policeScale;
+        this.heat = clamp(this.heat + gain * dt, 0, POLICE.heatMax);
       } else {
         this.heat = Math.max(0, this.heat - POLICE.heatDecay * dt);
       }
@@ -209,6 +224,8 @@ export class World implements AiWorldView {
       events.push({ type: 'copGiveUp', cop, reason: 'beaten' });
       this.cop = null;
       this.heat = 0;
+      this.arrestPending = false;
+      this.arrestTimer = 0;
       return;
     }
 
@@ -226,21 +243,25 @@ export class World implements AiWorldView {
       this.escapeTimer = Math.max(0, this.escapeTimer - dt * 0.5);
     }
 
-    // Pull alongside long enough and you are done.
-    const alongside =
-      isRiding(cop) &&
-      isRiding(player) &&
-      Math.abs(cop.s - player.s) < POLICE.bustRange &&
-      Math.abs(cop.lateral - player.lateral) < POLICE.bustLateral;
-    if (alongside) {
-      this.bustProgress = clamp(this.bustProgress + dt, 0, POLICE.bustTime);
-      if (this.bustProgress >= POLICE.bustTime) {
+    // Go down with a patrol on you and it is over. They pull up, wait for you
+    // to pick the bike up, and nick you the moment you are back on it.
+    const gap = Math.abs(cop.s - player.s);
+    if (player.state === 'down' && isRiding(cop) && gap < POLICE.arrestRange) {
+      this.arrestPending = true;
+    }
+    if (this.arrestPending) {
+      // Cuffed either when you remount, or after they have stood over you long
+      // enough - you cannot simply lie there and wait them out.
+      this.arrestTimer += dt;
+      if (player.state === 'ride' || this.arrestTimer > POLICE.arrestPatience) {
         player.state = 'busted';
         this.endRace('busted', events);
+        return;
       }
-    } else {
-      this.bustProgress = Math.max(0, this.bustProgress - POLICE.bustDecay * dt);
     }
+
+    // 0..1 for the HUD: how much trouble you are in right now.
+    this.bustProgress = clamp(1 - gap / POLICE.dangerRange, 0, 1);
   }
 
   // ------------------------------------------------------------------ race
@@ -339,13 +360,32 @@ export class World implements AiWorldView {
     events.push(...collideWithTraffic(field, this.traffic));
     events.push(...collideRacers(field));
     events.push(...collectPickups(field, this.pickups));
+    events.push(...stepPedestrians(this.pedestrians, field, this.player.s, dt));
+
+    for (const e of events) {
+      // Flattening a pedestrian is exactly the sort of thing that gets you
+      // noticed.
+      if (e.type === 'pedestrianHit' && e.racer === this.player) this.addHeat(POLICE.hitHeat * 1.6);
+    }
 
     this.stepPolice(dt, events);
 
     // --- outcomes -------------------------------------------------------------
     if (this.player.health <= 0 && this.player.state !== 'busted') {
-      knockDown(this.player, 1, CRASH.knockoutDownTime);
-      this.endRace('wasted', events);
+      knockDown(this.player, 1, CRASH.tumbleTime + CRASH.knockoutExtra);
+      // If a patrol put you there - or is simply standing over you when you go
+      // down - you are arrested rather than merely beaten. Checking proximity
+      // here as well as in stepPolice keeps the outcome independent of which
+      // one happens to land first on a given tick.
+      const cop = this.cop;
+      const copOnScene =
+        cop != null && isRiding(cop) && Math.abs(cop.s - this.player.s) < POLICE.arrestRange;
+      if (this.arrestPending || copOnScene) {
+        this.player.state = 'busted';
+        this.endRace('busted', events);
+      } else {
+        this.endRace('wasted', events);
+      }
     }
 
     this.updateStandings();

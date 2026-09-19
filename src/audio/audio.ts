@@ -241,6 +241,12 @@ export class GameAudio {
     this.burst({ type: 'square', freq: high ? 980 : 620, dur: high ? 0.35 : 0.14, gain: 0.16 });
   }
 
+  /** Comedy "oof" for flattening a pedestrian. */
+  oof(): void {
+    this.burst({ type: 'sawtooth', freq: 420, sweep: -300, dur: 0.28, gain: 0.2 });
+    this.burst({ type: 'noise', dur: 0.16, gain: 0.14, filter: 1100, sweep: -700, q: 2 });
+  }
+
   bust(): void {
     this.burst({ type: 'sawtooth', freq: 320, sweep: -240, dur: 0.9, gain: 0.3 });
   }
@@ -276,6 +282,9 @@ export class GameAudio {
           break;
         case 'pickup':
           if (e.racer.id === playerId) this.pickup();
+          break;
+        case 'pedestrianHit':
+          if (e.racer.id === playerId) this.oof();
           break;
         case 'countdown':
           this.beep(e.value === 0);

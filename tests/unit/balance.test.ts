@@ -52,7 +52,9 @@ describe('difficulty curve', () => {
 
   it('is completable at every difficulty', () => {
     for (const [name, s] of [['easy', easy], ['normal', normal], ['hard', hard]] as const) {
-      expect(s.finished, `${name} should be finishable`).toBeGreaterThanOrEqual(SEEDS.length * 0.6);
+      // Getting arrested or wasted is a legitimate outcome, so this only
+      // guards against a difficulty becoming effectively unfinishable.
+      expect(s.finished, `${name} should be finishable`).toBeGreaterThanOrEqual(SEEDS.length * 0.5);
     }
   });
 
@@ -76,7 +78,12 @@ describe('difficulty curve', () => {
   });
 
   it('puts the police in play without them dominating', () => {
+    // Roughly one patrol per race on Normal: enough to matter, not an escort.
     expect(normal.copsSeen).toBeGreaterThan(0);
-    expect(normal.copsSeen).toBeLessThan(SEEDS.length * 6);
+    expect(normal.copsSeen).toBeLessThan(SEEDS.length * 4);
+  });
+
+  it('turns up the heat as you step up', () => {
+    expect(hard.copsSeen).toBeGreaterThanOrEqual(normal.copsSeen);
   });
 });

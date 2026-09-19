@@ -74,3 +74,42 @@ describe('Track', () => {
     expect(Number.isFinite(past.heading)).toBe(true);
   });
 });
+
+describe('Track: beyond the baked range', () => {
+  it('extrapolates behind the start line instead of collapsing to it', () => {
+    const t = new Track({ seed: 3, length: 1000 });
+    const start = t.sampleAt(0);
+    const behind = t.sampleAt(-10);
+    const further = t.sampleAt(-20);
+    // Distinct points, receding in a straight line from the start.
+    const d1 = Math.hypot(behind.x - start.x, behind.z - start.z);
+    const d2 = Math.hypot(further.x - start.x, further.z - start.z);
+    expect(d1).toBeCloseTo(10, 4);
+    expect(d2).toBeCloseTo(20, 4);
+  });
+
+  it('keeps the starting grid from stacking on one spot', () => {
+    const t = new Track({ seed: 3, length: 1000 });
+    const seen = new Set<string>();
+    for (const s of [0, -2.3, -4.6, -6.9]) {
+      const p = t.sampleAt(s);
+      seen.add(`${p.x.toFixed(3)}:${p.z.toFixed(3)}`);
+    }
+    expect(seen.size).toBe(4);
+  });
+
+  it('extrapolates past the end of the track too', () => {
+    const t = new Track({ seed: 3, length: 500 });
+    const end = t.sampleAt(500);
+    const past = t.sampleAt(560);
+    expect(Math.hypot(past.x - end.x, past.z - end.z)).toBeGreaterThan(50);
+    expect(Number.isFinite(past.y)).toBe(true);
+  });
+
+  it('still offsets laterally correctly outside the range', () => {
+    const t = new Track({ seed: 3, length: 500 });
+    const centre = t.sampleAt(-12);
+    const right = t.toWorld(-12, 5);
+    expect(Math.hypot(right.x - centre.x, right.z - centre.z)).toBeCloseTo(5, 4);
+  });
+});

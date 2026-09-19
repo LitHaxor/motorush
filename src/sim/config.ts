@@ -28,6 +28,11 @@ export const BIKE = {
   offroadGrip: 0.56, // speed multiplier once both wheels are on dirt
   offroadRumble: 2.4,
   leanMax: 0.62, // radians, visual only
+  /** How strongly gradient pulls on you. 1 would be true gravity; this is
+   *  arcade, so it is exaggerated enough to feel without being punishing. */
+  slopeFactor: 3.2,
+  /** Top speed multiplier allowed while descending. */
+  downhillOverspeed: 1.1,
   boostMultiplier: 1.26,
   boostDuration: 3.2,
 };
@@ -73,6 +78,21 @@ export const CRASH = {
   rivalRespawnHealth: 45,
 
   // --- going down -------------------------------------------------------
+  /** How long the rider tumbles before scrambling up, at zero severity. */
+  tumbleTime: 0.55,
+  tumbleSeverityGain: 0.45,
+  /** Rivals are in less of a hurry to get up than you are. */
+  rivalTumbleScale: 1.35,
+  /** Extra time on the floor when a hit knocks you out cold. */
+  knockoutExtra: 1.2,
+  /** Metres the rider is thrown, per m/s of speed at the moment of impact. */
+  throwPerSpeed: 0.2,
+  throwMin: 1.5,
+  throwMax: 16,
+  /** How fast the rider runs back to the bike. */
+  riderRunSpeed: 5.5,
+  /** How far sideways a heavy crash throws the rider - over the guardrail. */
+  lateralThrow: 3.4,
   /**
    * Fraction of your speed you keep when you hit the deck. You tumble and
    * slide rather than stopping dead, so a 250 km/h crash throws you a long
@@ -134,29 +154,38 @@ export interface DifficultyPreset {
   traffic: number;
   aggression: number;
   distance: number;
+  /** Multiplier on how fast you attract police attention. */
+  police: number;
 }
 
 export const DIFFICULTY: Record<DifficultyKey, DifficultyPreset> = {
-  easy: { label: 'ROOKIE', rivalSkill: 0.93, traffic: 0.7, aggression: 0.6, distance: 3800 },
-  normal: { label: 'RASHER', rivalSkill: 1.0, traffic: 1.0, aggression: 1.0, distance: 5200 },
-  hard: { label: 'OUTLAW', rivalSkill: 1.045, traffic: 1.4, aggression: 1.5, distance: 6600 },
+  easy: { label: 'ROOKIE', rivalSkill: 0.95, traffic: 0.7, aggression: 0.6, distance: 3800, police: 1.4 },
+  normal: { label: 'RASHER', rivalSkill: 1.02, traffic: 1.0, aggression: 1.0, distance: 5200, police: 1.8 },
+  hard: { label: 'OUTLAW', rivalSkill: 1.05, traffic: 1.4, aggression: 1.5, distance: 6600, police: 2.2 },
 };
 
 export const POLICE = {
   heatMax: 100,
   /** Speed (m/s) above which you start attracting attention. */
-  speedThreshold: 52,
-  speedHeat: 5.5,
-  hitHeat: 9,
-  crashHeat: 6,
-  copHitHeat: 22,
-  heatDecay: 2.4,
+  speedThreshold: 55,
+  // Heat builds slowly: a patrol should be an event you dread a couple of
+  // times a race, not a permanent escort.
+  speedHeat: 1.7,
+  hitHeat: 7,
+  crashHeat: 5,
+  copHitHeat: 20,
+  heatDecay: 3.0,
   spawnBehind: 65,
-  /** Seconds a cop must stay alongside you to make the bust. */
-  bustTime: 2.2,
-  bustRange: 4.2,
-  bustLateral: 2.8,
-  bustDecay: 0.7,
+  /**
+   * How it actually works: the patrol shadows you and waits. Go down anywhere
+   * near them and they pull up alongside and arrest you on the spot. Stay on
+   * two wheels and they cannot touch you.
+   */
+  arrestRange: 14,
+  /** Distance at which the HUD starts warning you they are right there. */
+  dangerRange: 60,
+  /** How long they will stand over a downed rider before cuffing them anyway. */
+  arrestPatience: 4,
   /** Lead you must hold, for `escapeTime`, to lose them. */
   escapeDistance: 185,
   escapeTime: 2.6,

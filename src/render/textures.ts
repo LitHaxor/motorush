@@ -187,3 +187,126 @@ export function makeGlowTexture({ size = 128, color = '255,180,90' } = {}): THRE
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
+
+/**
+ * Building facade: a grid of windows over a base wall, with shopfronts along
+ * the ground floor. `floors` and `bays` control the window grid so the texture
+ * can be sized to the building's proportions.
+ */
+export function makeFacadeTexture({
+  size = 256,
+  floors = 8,
+  bays = 5,
+  wall = '#6d6257',
+  trim = '#4a423a',
+  litChance = 0.35,
+}: {
+  size?: number;
+  floors?: number;
+  bays?: number;
+  wall?: string;
+  trim?: string;
+  litChance?: number;
+} = {}): THREE.CanvasTexture {
+  const h = size * 2;
+  const c = canvas(size, h);
+  const ctx = ctx2d(c);
+
+  ctx.fillStyle = wall;
+  ctx.fillRect(0, 0, size, h);
+
+  // Subtle vertical banding so flat walls are not dead flat.
+  for (let i = 0; i < 40; i++) {
+    ctx.globalAlpha = 0.03 + Math.random() * 0.05;
+    ctx.fillStyle = Math.random() > 0.5 ? '#ffffff' : '#000000';
+    ctx.fillRect(Math.random() * size, 0, 4 + Math.random() * 22, h);
+  }
+  ctx.globalAlpha = 1;
+
+  const groundH = h / (floors + 1.6);
+  const upper = h - groundH;
+  const floorH = upper / floors;
+  const bayW = size / bays;
+
+  // Upper floors: window grid.
+  for (let f = 0; f < floors; f++) {
+    for (let b = 0; b < bays; b++) {
+      const x = b * bayW + bayW * 0.22;
+      const y = f * floorH + floorH * 0.22;
+      const w = bayW * 0.56;
+      const wh = floorH * 0.56;
+      const lit = Math.random() < litChance;
+      ctx.fillStyle = lit ? '#ffd98a' : '#1b2027';
+      ctx.fillRect(x, y, w, wh);
+      ctx.strokeStyle = trim;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, wh);
+      if (lit) {
+        ctx.globalAlpha = 0.25;
+        ctx.fillStyle = '#ffeec2';
+        ctx.fillRect(x - 2, y - 2, w + 4, wh + 4);
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // Ground floor: shopfronts and a cornice line.
+  ctx.fillStyle = trim;
+  ctx.fillRect(0, upper - 4, size, 6);
+  for (let b = 0; b < bays; b++) {
+    const x = b * bayW + bayW * 0.1;
+    const w = bayW * 0.8;
+    ctx.fillStyle = Math.random() < 0.5 ? '#26303c' : '#2f2a33';
+    ctx.fillRect(x, upper + groundH * 0.18, w, groundH * 0.6);
+    ctx.fillStyle = ['#c8503c', '#3c7cc8', '#c8a33c', '#4aa06a'][Math.floor(Math.random() * 4)];
+    ctx.fillRect(x, upper + groundH * 0.08, w, groundH * 0.12);
+  }
+
+  grain(ctx, size, h, 16);
+  return finish(c, { aniso: 8 });
+}
+
+/**
+ * W-beam guardrail. The U axis runs across the rail's height, so the banding
+ * here becomes the horizontal fold of the beam.
+ */
+export function makeGuardrailTexture({ size = 64 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+  const band = (from: number, to: number, fill: string) => {
+    ctx.fillStyle = fill;
+    ctx.fillRect(from * size, 0, (to - from) * size, size);
+  };
+  band(0, 1, '#9aa0a6');
+  band(0, 0.12, '#6f767d'); // shadowed lower lip
+  band(0.12, 0.42, '#b9bfc5');
+  band(0.42, 0.58, '#6b7278'); // the central fold
+  band(0.58, 0.88, '#b9bfc5');
+  band(0.88, 1, '#7c838a');
+  // Streaks of road grime along the length.
+  for (let i = 0; i < 26; i++) {
+    ctx.globalAlpha = 0.05 + Math.random() * 0.12;
+    ctx.fillStyle = Math.random() > 0.5 ? '#5a5f64' : '#d6dade';
+    ctx.fillRect(0, Math.random() * size, size, 1 + Math.random() * 2);
+  }
+  ctx.globalAlpha = 1;
+  grain(ctx, size, size, 14);
+  return finish(c, { aniso: 8 });
+}
+
+/** Zebra crossing: bars running along the U axis, across the road. */
+export function makeZebraTexture({ size = 256, bars = 9 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+  const step = size / bars;
+  for (let i = 0; i < bars; i++) {
+    // Leave the outer bars off so the crossing stops short of the kerb.
+    if (i === 0 || i === bars - 1) continue;
+    if (i % 2 === 0) continue;
+    ctx.fillStyle = 'rgba(240,240,235,0.92)';
+    ctx.fillRect(i * step, size * 0.06, step * 0.62, size * 0.88);
+  }
+  const tex = finish(c, { aniso: 8 });
+  tex.premultiplyAlpha = false;
+  return tex;
+}

@@ -103,10 +103,15 @@ export class Hud {
     if (world.cop) {
       this.pursuit.hidden = false;
       this.heat.hidden = true;
-      this.bust.style.width = `${(world.bustProgress / POLICE.bustTime) * 100}%`;
+      this.bust.style.width = `${world.bustProgress * 100}%`;
       const lead = p.s - world.cop.s;
+      const gap = Math.abs(p.s - world.cop.s);
       this.pursuitHint.textContent =
-        lead > POLICE.escapeDistance * 0.7 ? 'ALMOST CLEAR — KEEP GOING' : 'OUTRUN THEM OR KNOCK THEM DOWN';
+        lead > POLICE.escapeDistance * 0.7
+          ? 'ALMOST CLEAR — KEEP GOING'
+          : gap < POLICE.dangerRange
+            ? 'STAY UPRIGHT — CRASH AND YOU ARE DONE'
+            : 'OUTRUN THEM OR KNOCK THEM DOWN';
     } else {
       this.pursuit.hidden = true;
       const hot = world.heat > 8;
@@ -183,6 +188,9 @@ export class Hud {
           break;
         case 'placeChange':
           if (e.place < e.from) this.toast(`${ordinal(e.place)} PLACE`, 'hot');
+          break;
+        case 'pedestrianHit':
+          if (e.racer === player) this.toast('PEDESTRIAN!', 'hot');
           break;
         case 'copSpawn':
           this.showCentre('BUSTED?', '', 700);

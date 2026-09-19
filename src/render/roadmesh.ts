@@ -4,8 +4,9 @@
 import * as THREE from 'three';
 import type { Track } from '../sim/track';
 import type { SkyPreset } from './palette';
-import { makeMarkingsTexture, makeCheckerTexture } from './textures';
+import { makeMarkingsTexture, makeCheckerTexture, makeGuardrailTexture } from './textures';
 import { applyPbr, type GroundTextures } from './assets';
+import { cityBlend, type CitySegment } from '../sim/city';
 
 export interface Band {
   lateral: number;
@@ -76,23 +77,80 @@ export function ribbonGeometry(
  * landscape climb properly further out.
  */
 export const terrainElevation: ElevateFn = (s, lateral) => {
-  const d = Math.max(0, Math.abs(lateral) - 13);
-  const falloff = Math.min(1, d / 30);
+  // Stay well clear of the road: the verge beside the tarmac is flat, and the
+  // landscape only starts to lift further out.
+  const d = Math.max(0, Math.abs(lateral) - 16);
+  const falloff = Math.min(1, d / 45);
   const along =
-    Math.sin(s * 0.0041 + 2.1) * 12 +
-    Math.sin(s * 0.0165) * 4.5 +
-    Math.sin(s * 0.0092 + 1.3) * 3.2;
+    Math.sin(s * 0.0041 + 2.1) * 7 +
+    Math.sin(s * 0.0165) * 2.2 +
+    Math.sin(s * 0.0092 + 1.3) * 1.6;
   // Vary across the track too, or the hills read as parallel walls.
-  const across = Math.sin(lateral * 0.0075) * 10 + Math.sin(lateral * 0.021 + s * 0.0033) * 5;
+  const across = Math.sin(lateral * 0.0075) * 6 + Math.sin(lateral * 0.021 + s * 0.0033) * 2.5;
   return (along + across) * falloff * falloff;
 };
+
+/** Terrain that is flattened out wherever the city has been built. */
+export function makeTerrainElevation(city: readonly CitySegment[]): ElevateFn {
+  return (s, lateral) => terrainElevation(s, lateral) * (1 - cityBlend(city, s));
+}
 
 export interface RoadHandle {
   group: THREE.Group;
   dispose(): void;
 }
 
-export function buildRoad(track: Track, _preset: SkyPreset, textures: GroundTextures): RoadHandle {
+/**
+ * A vertical strip following the track - used for the guardrail. Unlike
+ * `ribbonGeometry`, its two edges differ in height rather than lateral offset.
+ */
+export function railGeometry(
+  track: Track,
+  lateral: number,
+  yBottom: number,
+  yTop: number,
+  step = track.step,
+): THREE.BufferGeometry {
+  const rows = Math.ceil(track.length / step) + 1;
+  const positions = new Float32Array(rows * 2 * 3);
+  const uvs = new Float32Array(rows * 2 * 2);
+  const indices: number[] = [];
+  const p = { x: 0, y: 0, z: 0, heading: 0, curvature: 0 };
+
+  for (let r = 0; r < rows; r++) {
+    const s = Math.min(track.length, r * step);
+    track.toWorld(s, lateral, p);
+    for (let c = 0; c < 2; c++) {
+      const i = (r * 2 + c) * 3;
+      positions[i] = p.x;
+      positions[i + 1] = p.y + (c === 0 ? yBottom : yTop);
+      positions[i + 2] = p.z;
+      const j = (r * 2 + c) * 2;
+      uvs[j] = c;
+      uvs[j + 1] = s / 4; // one texture tile every 4 m of rail
+    }
+  }
+  for (let r = 0; r < rows - 1; r++) {
+    const a = r * 2;
+    indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+export function buildRoad(
+  track: Track,
+  _preset: SkyPreset,
+  textures: GroundTextures,
+  city: readonly CitySegment[] = [],
+): RoadHandle {
+  const elevate = makeTerrainElevation(city);
   const group = new THREE.Group();
   group.name = 'road';
   const disposables: { dispose(): void }[] = [];
@@ -151,6 +209,26 @@ export function buildRoad(track: Track, _preset: SkyPreset, textures: GroundText
   }
   disposables.push(dirtMat);
 
+  // --- guardrails ----------------------------------------------------------
+  // Placed exactly on the out-of-bounds line, so what you see is what you hit.
+  const railTex = makeGuardrailTexture();
+  const railMat = new THREE.MeshStandardMaterial({
+    map: railTex,
+    roughness: 0.42,
+    metalness: 0.75,
+    side: THREE.DoubleSide,
+  });
+  for (const sign of [-1, 1]) {
+    const geo = railGeometry(track, sign * shoulderEdge, 0.42, 0.95);
+    const rail = new THREE.Mesh(geo, railMat);
+    rail.castShadow = true;
+    rail.receiveShadow = true;
+    rail.name = `guardrail-${sign > 0 ? 'right' : 'left'}`;
+    group.add(rail);
+    disposables.push(geo);
+  }
+  disposables.push(railMat, railTex);
+
   // --- terrain ------------------------------------------------------------
   const grassMat = new THREE.MeshStandardMaterial({ roughness: 1 });
   applyPbr(grassMat, textures.grass, { normalScale: 0.9, roughness: 1 });
@@ -160,7 +238,7 @@ export function buildRoad(track: Track, _preset: SkyPreset, textures: GroundText
     const laterals = [shoulderEdge + 0.4, 18, 26, 36, 50, 70, 100, 145, 200, far].map((v) => v * sign);
     const bands: Band[] = laterals.map((lateral) => ({ lateral, u: Math.abs(lateral) / 40 }));
     if (sign < 0) bands.reverse();
-    const geo = ribbonGeometry(track, bands, 40, terrainElevation);
+    const geo = ribbonGeometry(track, bands, 40, elevate);
     const mesh = new THREE.Mesh(geo, grassMat);
     mesh.receiveShadow = true;
     group.add(mesh);
@@ -177,9 +255,11 @@ export function buildRoad(track: Track, _preset: SkyPreset, textures: GroundText
 }
 
 /** Checkered band painted across the road. */
-function checkerStrip(track: Track, s: number, length = 3): THREE.Mesh {
-  const tex = makeCheckerTexture({ squares: 12 });
-  tex.repeat.set(12, 1.2);
+function checkerStrip(track: Track, s: number, length = 3, squaresAcross = 14): THREE.Mesh {
+  const tex = makeCheckerTexture({ squares: 2 });
+  // One texture tile is a 2x2 check, so half as many tiles as squares wanted.
+  const rows = Math.max(1, Math.round((length / (track.halfWidth * 2)) * squaresAcross));
+  tex.repeat.set(squaresAcross / 2, rows / 2);
   const geo = ribbonGeometry(
     track,
     [{ lateral: -track.halfWidth, u: 0 }, { lateral: track.halfWidth, u: 1 }],
@@ -189,16 +269,40 @@ function checkerStrip(track: Track, s: number, length = 3): THREE.Mesh {
     s,
     s + length,
   );
-  const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 });
+  // Unlit: painted checks should read as black and white, not wash out under
+  // a midday sun.
+  const mat = new THREE.MeshBasicMaterial({ map: tex });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = `checker-${s}`;
   return mesh;
 }
 
-/** Start banner + line. */
+/**
+ * Start line: a wide checkered band right across the road, flanked by
+ * checkered markers on both kerbs and the centre line.
+ */
 export function buildStartLine(track: Track): THREE.Group {
   const group = new THREE.Group();
-  group.add(checkerStrip(track, 0, 2.5));
+  group.name = 'startline';
+  group.add(checkerStrip(track, 0, 8));
+
+  const coneTex = makeCheckerTexture({ squares: 4 });
+  const coneMat = new THREE.MeshStandardMaterial({ map: coneTex, roughness: 0.7 });
+  const coneGeo = new THREE.CylinderGeometry(0.16, 0.38, 1.25, 10);
+  const baseGeo = new THREE.CylinderGeometry(0.46, 0.5, 0.14, 12);
+  const baseMat = new THREE.MeshStandardMaterial({ color: 0xe6e6e6, roughness: 0.8 });
+
+  for (const lateral of [-track.halfWidth + 0.9, -0.2, track.halfWidth - 0.9]) {
+    const at = track.toWorld(0, lateral);
+    const cone = new THREE.Mesh(coneGeo, coneMat);
+    cone.position.set(at.x, at.y + 0.7, at.z);
+    cone.castShadow = true;
+    group.add(cone);
+
+    const base = new THREE.Mesh(baseGeo, baseMat);
+    base.position.set(at.x, at.y + 0.07, at.z);
+    group.add(base);
+  }
   return group;
 }
 

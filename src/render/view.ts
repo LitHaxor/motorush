@@ -16,7 +16,10 @@ import { swingProgress } from '../sim/combat';
 import { pickSky, type SkyPreset } from './palette';
 import { createSky, type SkyHandle } from './sky';
 import { buildRoad, buildFinishLine, buildStartLine, type RoadHandle } from './roadmesh';
-import { buildScenery, createPickupMesh, type SceneryHandle, type PickupRig } from './scenery';
+import {
+  buildScenery, createPickupMesh, createPedestrianMesh, buildCrossings,
+  type SceneryHandle, type PickupRig, type PedestrianRig,
+} from './scenery';
 import { createBikeRig, disposeBikeGeometry, type BikeRig } from './bikemesh';
 import { createCarMesh, createCarFromModel, disposeCarGeometry, type CarRig } from './carmesh';
 import { ParticleField, CameraShake } from './effects';
@@ -62,6 +65,8 @@ export class GameView {
   private readonly carRigs = new Map<number, CarRig>();
   private readonly carPool = new Map<string, CarRig[]>();
   private readonly pickupRigs = new Map<number, PickupRig>();
+  private readonly pedRigs = new Map<number, PedestrianRig>();
+  private crossingsGroup: { group: THREE.Group; dispose(): void } | null = null;
   private readonly downAnim = new Map<number, number>();
 
   private readonly particles = new ParticleField();
@@ -180,10 +185,10 @@ export class GameView {
   /** Build everything that depends on the current track. */
   private buildWorld(): void {
     const world = this.world;
-    this.road = buildRoad(world.track, this.preset, this.textures);
+    this.road = buildRoad(world.track, this.preset, this.textures, world.citySegments);
     this.scene.add(this.road.group);
 
-    this.scenery = buildScenery(world.track, world.rng, this.preset, this.models);
+    this.scenery = buildScenery(world.track, world.rng, this.preset, this.models, world.citySegments);
     this.scene.add(this.scenery.group);
 
     this.trackProps = new THREE.Group();
@@ -196,6 +201,16 @@ export class GameView {
       const at = world.track.toWorld(pickup.s, pickup.lateral);
       rig.root.position.set(at.x, at.y + 1.25, at.z);
       this.pickupRigs.set(pickup.id, rig);
+      this.scene.add(rig.root);
+    }
+
+    this.crossingsGroup = buildCrossings(world.track, world.crossings);
+    this.scene.add(this.crossingsGroup.group);
+
+    for (const ped of world.pedestrians) {
+      const rig = createPedestrianMesh(ped.colour, ped.kind, ped.id);
+      rig.root.visible = false;
+      this.pedRigs.set(ped.id, rig);
       this.scene.add(rig.root);
     }
 
@@ -248,6 +263,18 @@ export class GameView {
       rig.dispose();
     }
     this.pickupRigs.clear();
+
+    for (const rig of this.pedRigs.values()) {
+      this.scene.remove(rig.root);
+      rig.dispose();
+    }
+    this.pedRigs.clear();
+
+    if (this.crossingsGroup) {
+      this.scene.remove(this.crossingsGroup.group);
+      this.crossingsGroup.dispose();
+      this.crossingsGroup = null;
+    }
 
     if (this.road) {
       this.scene.remove(this.road.group);
@@ -342,6 +369,12 @@ export class GameView {
         case 'holeshot':
           this.shake.add(0.3);
           break;
+        case 'pedestrianHit': {
+          const at = this.world.track.toWorld(e.pedestrian.s, e.pedestrian.lateral, this.tmpSample);
+          this.particles.burst(this.tmpVec.set(at.x, at.y + 1, at.z), 0xffd08a, 12);
+          if (e.racer === player) this.shake.add(0.22);
+          break;
+        }
         default:
           break;
       }
@@ -363,6 +396,7 @@ export class GameView {
     this.syncRacers(dt);
     this.syncTraffic();
     this.syncPickups(dt);
+    this.syncPedestrians(dt);
 
     this.particles.update(dt);
     this.shake.update(dt);
@@ -416,7 +450,26 @@ export class GameView {
     rig.lean.rotation.z = -r.lean * (1 - down) - leanSide * 1.35 * down;
     rig.lean.position.y = -0.22 * down;
     rig.lean.rotation.x = 0.25 * down;
-    rig.rider.visible = down < 0.75;
+    rig.rider.visible = true;
+
+    // --- rider, on or off the bike --------------------------------------
+    const pivot = rig.riderPivot;
+    if (r.state === 'down') {
+      // Thrown clear: the rider ends up down the road from their bike and has
+      // to go and fetch it. Forward is local -Z.
+      pivot.position.z = -r.riderThrow;
+      if (r.riderPhase === 'tumble') {
+        pivot.position.y = -0.52;
+        pivot.rotation.set(this.time * 11 + r.id, 0, this.time * 5);
+      } else {
+        // Up and running back, with a bit of a bob on.
+        pivot.position.y = -0.3 + Math.abs(Math.sin(this.time * 11)) * 0.07;
+        pivot.rotation.set(0.18, 0, 0);
+      }
+    } else {
+      pivot.position.set(0, 0, 0);
+      pivot.rotation.set(0, 0, -r.lean);
+    }
 
     rig.frontWheel.rotation.x = -r.wheelAngle;
     rig.rearWheel.rotation.x = -r.wheelAngle;
@@ -572,6 +625,57 @@ export class GameView {
     }
   }
 
+  /** Position and animate the crowd near the player. */
+  private syncPedestrians(_dt: number): void {
+    const playerS = this.world.player.s;
+    for (const ped of this.world.pedestrians) {
+      const rig = this.pedRigs.get(ped.id);
+      if (!rig) continue;
+      const ds = ped.s - playerS;
+      const visible = ds > -60 && ds < 300;
+      rig.root.visible = visible;
+      if (!visible) continue;
+
+      const at = this.world.track.toWorld(ped.s, ped.lateral, this.tmpSample);
+      rig.root.position.set(at.x, at.y + ped.height, at.z);
+
+      if (ped.state === 'flying' || ped.state === 'down') {
+        // Cartwheel through the air, then lie there.
+        rig.root.rotation.set(ped.spin, at.heading, ped.spin * 0.6);
+        rig.body.rotation.set(ped.state === 'down' ? Math.PI / 2 : 0, 0, 0);
+        rig.body.position.y = ped.state === 'down' ? 0.25 : 0;
+        continue;
+      }
+
+      rig.body.rotation.set(0, 0, 0);
+      rig.body.position.y = 0;
+
+      if (ped.state === 'walking') {
+        // Face the way they are crossing and swing their legs.
+        rig.root.rotation.set(0, at.heading - ped.dir * Math.PI / 2, 0);
+        const swing = Math.sin(this.time * ped.speed * 4.5 + ped.id) * 0.55;
+        rig.legL.rotation.x = swing;
+        rig.legR.rotation.x = -swing;
+        rig.armL.rotation.x = -swing * 0.7;
+        rig.armR.rotation.x = swing * 0.7;
+      } else {
+        // Waiting or cheering: face the road, bounce, wave.
+        rig.root.rotation.set(0, at.heading + (ped.lateral > 0 ? Math.PI / 2 : -Math.PI / 2), 0);
+        rig.legL.rotation.x = 0;
+        rig.legR.rotation.x = 0;
+        if (ped.state === 'cheering') {
+          const t = this.time * 6 + ped.timer;
+          rig.root.position.y = at.y + Math.abs(Math.sin(t)) * 0.12;
+          rig.armL.rotation.x = -2.2 + Math.sin(t) * 0.5;
+          rig.armR.rotation.x = -2.2 + Math.cos(t) * 0.5;
+        } else {
+          rig.armL.rotation.x = 0;
+          rig.armR.rotation.x = 0;
+        }
+      }
+    }
+  }
+
   private updateCamera(dt: number, playerInput?: Readonly<RacerInput>): void {
     const world = this.world;
     const p = world.player;
@@ -582,7 +686,7 @@ export class GameView {
     const down = this.downAnim.get(p.id) ?? 0;
     const back = CAM.back + speedNorm * CAM.backSpeedGain + down * 2.4;
 
-    const behind = track.toWorld(Math.max(0, p.s - back), this.camLateral, this.tmpSample);
+    const behind = track.toWorld(p.s - back, this.camLateral, this.tmpSample);
     const height = CAM.height + down * 1.5;
     this.camera.position.set(behind.x, behind.y + height, behind.z);
 

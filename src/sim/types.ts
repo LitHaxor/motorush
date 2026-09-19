@@ -3,6 +3,8 @@
 
 export type RacerKind = 'player' | 'rival' | 'cop';
 export type RacerState = 'ride' | 'down' | 'finished' | 'busted';
+/** While down: thrown clear and tumbling, or up and running back to the bike. */
+export type RiderPhase = 'tumble' | 'recover';
 export type WeaponType = 'fist' | 'club' | 'baton';
 export type PickupKind = 'health' | 'club' | 'boost';
 export type RaceState = 'countdown' | 'racing' | 'finished' | 'busted' | 'wasted';
@@ -72,6 +74,12 @@ export interface Racer {
 
   wheelAngle: number;
   bumpCooldown: number;
+  /** Metres the rider is currently separated from their bike. */
+  riderThrow: number;
+  riderThrowTarget: number;
+  /** Sideways displacement of the rider - a barrier crash throws them over it. */
+  riderLateralThrow: number;
+  riderPhase: RiderPhase;
   place: number;
   finishTime: number | null;
   knockdowns: number;
@@ -158,6 +166,15 @@ export type SimEvent =
   | { type: 'placeChange'; place: number; from: number }
   | { type: 'copSpawn'; cop: Racer }
   | { type: 'copGiveUp'; cop: Racer; reason: 'beaten' | 'outrun' }
+  | { type: 'pedestrianHit'; racer: Racer; pedestrian: PedestrianRef; impact: number }
   | { type: 'raceEnd'; reason: EndReason; result: RaceResult };
+
+/** Structural shape of a pedestrian, kept here to avoid a circular import. */
+export interface PedestrianRef {
+  id: number;
+  s: number;
+  lateral: number;
+  kind: string;
+}
 
 export type SimEventType = SimEvent['type'];

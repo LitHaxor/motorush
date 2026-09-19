@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { World, COUNTDOWN_TIME } from '../../src/sim/world';
+import { knockDown } from '../../src/sim/racer';
 import { POLICE, DIFFICULTY } from '../../src/sim/config';
 import type { RacerInput, SimEvent } from '../../src/sim/types';
 
@@ -224,47 +225,98 @@ describe('World: police', () => {
     expect(w.field).toContain(w.cop);
   });
 
-  it('busts you if a cop stays alongside', () => {
+
+  it('arrests you once you go down with a patrol on you', () => {
     const w = new World({ seed: 11 });
     startRace(w);
     const cop = w.spawnCop();
-    for (let i = 0; i < 60 * 5 && !w.isOver; i++) {
-      // Hold the cop *alongside* - same s, one bike-width over. Stacking them
-      // on the exact same spot would just have them shove each other off the
-      // road before the bust could land.
-      cop.s = w.player.s;
+    // Put the player on the tarmac right in front of them.
+    knockDown(w.player, 1);
+    for (let i = 0; i < 60 * 8 && !w.isOver; i++) {
+      cop.s = w.player.s - 6;
       cop.lateral = w.player.lateral + 2;
       w.step(DT, INPUT({ throttle: 1 }));
     }
+
     expect(w.state).toBe('busted');
     expect(w.player.state).toBe('busted');
     expect(w.result!.reason).toBe('busted');
   });
 
-  it('arrests a full-health rider before beating them unconscious', () => {
-    // The baton must not out-damage the bust timer, or BUSTED never happens.
+  it('gives you no way to wait the patrol out on the ground', () => {
     const w = new World({ seed: 11 });
     startRace(w);
     const cop = w.spawnCop();
-    for (let i = 0; i < 60 * 5 && !w.isOver; i++) {
+    knockDown(w.player, 1);
+    let elapsed = 0;
+    for (let i = 0; i < 60 * 12 && !w.isOver; i++) {
+      cop.s = w.player.s - 6;
+      // Never touch the throttle: the rider dawdles back to the bike.
+      w.step(DT, INPUT({ throttle: 0 }));
+      elapsed += DT;
+    }
+    expect(w.state).toBe('busted');
+    expect(elapsed).toBeLessThan(POLICE.arrestPatience + 2);
+  });
+
+  it('cannot arrest you while you are still upright', () => {
+    const w = new World({ seed: 11 });
+    startRace(w);
+    const cop = w.spawnCop();
+    for (let i = 0; i < 60 * 4 && !w.isOver; i++) {
+      // Keep the road clear and hold the racing line: crashing into traffic or
+      // drifting into the barrier would both be fair arrests, and would stop
+      // this testing what it claims to.
+      for (const car of w.traffic.cars) car.s = w.player.s + 500;
+      w.player.lateral = 2;
+      // Keep them healthy too: a cop CAN baton you off the bike and then
+      // arrest you, which is a fair bust. This test is only about whether
+      // riding alongside is enough on its own.
+      w.player.health = w.player.maxHealth;
       cop.s = w.player.s;
       cop.lateral = w.player.lateral + 2;
       w.step(DT, INPUT({ throttle: 1 }));
     }
-    expect(w.state).toBe('busted');
-    expect(w.player.health).toBeGreaterThan(0);
+    expect(w.state).toBe('racing');
+    expect(w.player.state).not.toBe('busted');
   });
 
-  it('does not bust you from a distance', () => {
+  it('lets a patrol baton you off the bike and then arrest you', () => {
     const w = new World({ seed: 11 });
     startRace(w);
     const cop = w.spawnCop();
-    for (let i = 0; i < 60 * 3; i++) {
-      cop.s = w.player.s - 60;
+    w.player.health = 8; // one baton hit from going down
+    for (let i = 0; i < 60 * 6 && !w.isOver; i++) {
+      for (const car of w.traffic.cars) car.s = w.player.s + 500;
+      w.player.lateral = 2;
+      cop.s = w.player.s;
+      cop.lateral = w.player.lateral + 1.6;
       w.step(DT, INPUT({ throttle: 1 }));
     }
+    expect(w.state).toBe('busted');
+  });
+
+  it('does not arrest you if you crash far from the patrol', () => {
+    const w = new World({ seed: 11 });
+    startRace(w);
+    const cop = w.spawnCop();
+    cop.s = w.player.s - 140;
+    knockDown(w.player, 1);
+    w.step(DT, INPUT({ throttle: 0 }));
     expect(w.state).toBe('racing');
-    expect(w.bustProgress).toBe(0);
+  });
+
+  it('reports how close the patrol is for the HUD', () => {
+    const w = new World({ seed: 11 });
+    startRace(w);
+    const cop = w.spawnCop();
+    cop.s = w.player.s - 200;
+    w.step(DT, INPUT({ throttle: 1 }));
+    const far = w.bustProgress;
+    cop.s = w.player.s - 5;
+    w.step(DT, INPUT({ throttle: 1 }));
+    expect(w.bustProgress).toBeGreaterThan(far);
+    expect(w.bustProgress).toBeLessThanOrEqual(1);
   });
 
   it('breaks off the pursuit once you open up a big enough lead', () => {
@@ -302,5 +354,26 @@ describe('World: police', () => {
     w.addHeat(500);
     race(w, 0.5, INPUT({ throttle: 1 }));
     expect(w.cop).toBe(first);
+  });
+});
+
+describe('World: arrest vs. wasted', () => {
+  it('reads as BUSTED when a patrol is on the scene as you go down', () => {
+    const w = new World({ seed: 21 });
+    startRace(w);
+    const cop = w.spawnCop();
+    cop.s = w.player.s - 4;
+    // Health hits zero on the same tick the cop is alongside.
+    w.player.health = 0;
+    w.step(DT, INPUT({ throttle: 1 }));
+    expect(w.state).toBe('busted');
+  });
+
+  it('reads as WASTED when there is no patrol around', () => {
+    const w = new World({ seed: 21 });
+    startRace(w);
+    w.player.health = 0;
+    w.step(DT, INPUT({ throttle: 1 }));
+    expect(w.state).toBe('wasted');
   });
 });

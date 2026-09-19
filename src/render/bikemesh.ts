@@ -17,6 +17,11 @@ export interface BikeRig {
   frontWheel: THREE.Group;
   rearWheel: THREE.Group;
   rider: THREE.Group;
+  /**
+   * Parent of the rider, hung off the root rather than the leaning bike, so
+   * that in a crash the rider can part company with the machine.
+   */
+  riderPivot: THREE.Group;
   armL: THREE.Group;
   armR: THREE.Group;
   clubL: THREE.Mesh;
@@ -170,9 +175,13 @@ export function createBikeRig(color: number, kind: RacerKind = 'rival'): BikeRig
   }
 
   // --- rider ---------------------------------------------------------------
+  // Deliberately a sibling of `lean`: when the bike goes down the rider is
+  // thrown clear and has to run back to it.
+  const riderPivot = new THREE.Group();
+  root.add(riderPivot);
   const rider = new THREE.Group();
   rider.position.set(0, 0.86, 0.34);
-  lean.add(rider);
+  riderPivot.add(rider);
 
   const torso = new THREE.Mesh(geo('torso', () => new THREE.CapsuleGeometry(0.17, 0.34, 4, 8)), leather);
   torso.position.set(0, 0.28, -0.08);
@@ -271,6 +280,7 @@ export function createBikeRig(color: number, kind: RacerKind = 'rival'): BikeRig
     frontWheel: front,
     rearWheel: rear,
     rider,
+    riderPivot,
     armL,
     armR,
     clubL,

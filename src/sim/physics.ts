@@ -8,6 +8,8 @@ import { isRiding, knockDown, remount, damageRacer, speedCap } from './racer';
 import type { Track } from './track';
 import type { Racer, RacerInput, SimEvent } from './types';
 
+const GRAVITY = 9.81;
+
 export const NEUTRAL_INPUT: Readonly<RacerInput> = Object.freeze({
   throttle: 0,
   brake: 0,
@@ -66,17 +68,29 @@ export function stepRacer(
   regenerate(r, dt);
 
   if (r.state === 'down') {
-    // Tumble: you carry your speed down the road and it bleeds off slowly, so
-    // how far you slide depends on how fast you were going.
+    // The bike carries its speed down the road and bleeds it off slowly, so a
+    // fast get-off scatters bike and rider a long way.
     r.speed = damp(r.speed, 0, CRASH.slideDrag, dt);
+    // Even sliding on your back, a hill still has an opinion.
+    r.speed = Math.max(0, r.speed - GRAVITY * track.slopeAt(r.s) * BIKE.slopeFactor * dt);
     r.s += r.speed * dt;
-    // The rider gets up and runs back to the bike on their own. Holding the
-    // throttle makes them hustle, so recovery is partly under player control.
-    const hustle = 1 + clamp(input.throttle ?? 0, 0, 1) * CRASH.hustleBonus;
-    r.downTimer -= dt * hustle;
-    if (r.downTimer <= 0) {
-      remount(r, track);
-      events.push({ type: 'remount', racer: r });
+
+    if (r.riderPhase === 'tumble') {
+      // Thrown clear, still rolling.
+      r.riderThrow = damp(r.riderThrow, r.riderThrowTarget, 5, dt);
+      r.downTimer -= dt;
+      if (r.downTimer <= 0) r.riderPhase = 'recover';
+    } else {
+      // Up and running back to the bike. Holding the throttle makes them
+      // hustle, so how long you lose is partly in the player's hands.
+      const hustle = 1 + clamp(input.throttle ?? 0, 0, 1) * CRASH.hustleBonus;
+      r.riderThrow -= CRASH.riderRunSpeed * hustle * dt;
+      // Climb back over the barrier on the way.
+      r.riderLateralThrow = damp(r.riderLateralThrow, 0, 3 * hustle, dt);
+      if (r.riderThrow <= 0.05) {
+        remount(r, track);
+        events.push({ type: 'remount', racer: r });
+      }
     }
     return events;
   }
@@ -115,7 +129,15 @@ export function stepRacer(
     r.speed -= BIKE.coastDecel * dt;
   }
   if (brake > 0) r.speed -= BIKE.brakeDecel * brake * dt;
-  r.speed = clamp(r.speed, 0, cap * 1.02);
+
+  // Gravity along the road. Climbs bleed speed, descents give it back, which
+  // makes the hills something you ride rather than just look at.
+  const slope = track.slopeAt(r.s);
+  r.speed -= GRAVITY * slope * BIKE.slopeFactor * dt;
+
+  // A descent can carry you past the normal cap, but only so far.
+  const ceiling = slope < 0 ? cap * BIKE.downhillOverspeed : cap * 1.02;
+  r.speed = clamp(r.speed, 0, ceiling);
   if (r.speed > r.bestSpeed) r.bestSpeed = r.speed;
 
   // --- lateral ---------------------------------------------------------

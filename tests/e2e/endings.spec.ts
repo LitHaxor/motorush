@@ -54,17 +54,26 @@ test.describe('end screens', () => {
     expect((await worldState(page)).state).toBe('wasted');
   });
 
-  test('a cop that stays alongside shows BUSTED', async ({ page }) => {
+  test('going down with a patrol on you shows BUSTED', async ({ page }) => {
     await gotoGame(page);
     await startRace(page, { seed: 558 });
 
-    // Send a patrol bike and hold it alongside until the bust lands.
-    await page.evaluate(async () => {
+    // Send a patrol, then put the rider on the tarmac in front of them. The
+    // arrest lands when they pick the bike back up.
+    await page.evaluate(() => {
       const api = window.roadbrush!;
       const w = api.world()!;
       const cop = w.spawnCop();
-      for (let i = 0; i < 60 && api.mode() === 'racing'; i++) {
-        cop.s = w.player.s;
+      // Put a car head-on in front of them: a real crash, through the real
+      // collision path, rather than poking the health value.
+      const car = w.traffic.cars[0];
+      car.active = true;
+      car.dir = -1;
+      car.speed = 28;
+      car.lateral = w.player.lateral;
+      car.s = w.player.s + 6;
+      for (let i = 0; i < 80 && api.mode() === 'racing'; i++) {
+        cop.s = w.player.s - 6;
         cop.lateral = w.player.lateral + 2;
         api.fastForward(0.1, { throttle: 1 });
       }
@@ -74,6 +83,30 @@ test.describe('end screens', () => {
     await expect(page.locator('#screen-busted .verdict__stamp')).toHaveText('BUSTED');
     await expect(page.locator('#busted-stats > div')).toHaveCount(5);
     expect((await worldState(page)).state).toBe('busted');
+  });
+
+  test('staying upright keeps you out of the cells', async ({ page }) => {
+    await gotoGame(page);
+    await startRace(page, { seed: 562 });
+
+    await page.evaluate(() => {
+      const api = window.roadbrush!;
+      const w = api.world()!;
+      const cop = w.spawnCop();
+      for (let i = 0; i < 40 && api.mode() === 'racing'; i++) {
+        // Clear road, full health, glued alongside: proximity alone is not
+        // an arrest.
+        for (const car of w.traffic.cars) car.s = w.player.s + 500;
+        w.player.lateral = 2;
+        w.player.health = w.player.maxHealth;
+        cop.s = w.player.s;
+        cop.lateral = w.player.lateral + 2;
+        api.fastForward(0.1, { throttle: 1 });
+      }
+    });
+
+    await expect(page.locator('#screen-busted')).toBeHidden();
+    expect((await worldState(page)).state).toBe('racing');
   });
 
   test('the pursuit warning appears while a cop is chasing', async ({ page }) => {

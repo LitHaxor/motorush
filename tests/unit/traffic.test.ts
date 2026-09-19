@@ -66,10 +66,11 @@ describe('TrafficSystem', () => {
 });
 
 describe('traffic collisions', () => {
-  it('crashes the rider on a high closing-speed impact', () => {
+  it('crashes the rider on a high closing-speed head-on impact', () => {
     const t = build();
     only(t, { s: 100, lateral: 0, speed: 20, dir: -1 });
-    const r = createRacer({ id: 1, s: 100, lateral: 0, speed: 60 });
+    // Just touching the car's nose - contact is longitudinal, not lateral.
+    const r = createRacer({ id: 1, s: 96.8, lateral: 0, speed: 60 });
     const events = collideWithTraffic([r], t);
     const crash = events.find((e) => e.type === 'crash');
     expect(crash).toBeDefined();
@@ -91,13 +92,25 @@ describe('traffic collisions', () => {
   it('marks the boundary between a scrape and a crash at the configured speed', () => {
     const under = build();
     only(under, { s: 100, lateral: 0, speed: 40, dir: 1 });
-    const a = createRacer({ id: 1, s: 100, lateral: 0, speed: 40 + CRASH.hardImpactSpeed - 1 });
+    const a = createRacer({ id: 1, s: 96.8, lateral: 0, speed: 40 + CRASH.hardImpactSpeed - 1 });
     expect(collideWithTraffic([a], under).some((e) => e.type === 'scrape')).toBe(true);
 
     const over = build();
     only(over, { s: 100, lateral: 0, speed: 40, dir: 1 });
-    const b = createRacer({ id: 2, s: 100, lateral: 0, speed: 40 + CRASH.hardImpactSpeed + 1 });
+    const b = createRacer({ id: 2, s: 96.8, lateral: 0, speed: 40 + CRASH.hardImpactSpeed + 1 });
     expect(collideWithTraffic([b], over).some((e) => e.type === 'crash')).toBe(true);
+  });
+
+  it('sideswiping a car scrapes you but does not put you down', () => {
+    const t = build();
+    only(t, { s: 100, lateral: 0, speed: 20, dir: -1 });
+    // Alongside the car and drifting into its flank at a huge closing speed:
+    // contact is lateral, so it must not be treated as a head-on shunt.
+    const r = createRacer({ id: 1, s: 100, lateral: 1.4, speed: 65 });
+    const events = collideWithTraffic([r], t);
+    expect(events.some((e) => e.type === 'scrape')).toBe(true);
+    expect(events.some((e) => e.type === 'crash')).toBe(false);
+    expect(r.state).toBe('ride');
   });
 
   it('ignores cars in another lane', () => {

@@ -58,7 +58,7 @@ export function applyHit(attacker: Racer, victim: Racer): { damage: number; fata
   attacker.staggerPush = -dir * COMBAT.knockLateral * 0.5;
   attacker.hitsLanded += 1;
 
-  if (fatal) knockDown(victim, 1, CRASH.knockoutDownTime);
+  if (fatal) knockDown(victim, 1, CRASH.tumbleTime + CRASH.knockoutExtra);
   return { damage, fatal };
 }
 

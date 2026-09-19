@@ -152,8 +152,16 @@ export function collideWithTraffic(racers: readonly Racer[], traffic: TrafficSys
       const halfWid = car.type.width / 2 + BIKE_HALF.width;
       if (Math.abs(dx) > halfWid) continue;
 
+      // Which axis did contact happen on? Whichever is least overlapped is the
+      // face you actually struck. Running into the back of a car (or an
+      // oncoming bonnet) puts you down; drifting into its flank does not, it
+      // just scrapes you along and shoves you clear.
+      const penetrationS = halfLen - Math.abs(ds);
+      const penetrationX = halfWid - Math.abs(dx);
+      const headOn = penetrationS <= penetrationX;
+
       const closing = Math.abs(r.speed - TrafficSystem.velocity(car));
-      if (closing > CRASH.hardImpactSpeed) {
+      if (headOn && closing > CRASH.hardImpactSpeed) {
         const fatal = damageRacer(r, HEALTH.crashDamage);
         if (knockDown(r, clamp(closing / 60, 0.4, 1))) {
           events.push({ type: 'crash', racer: r, cause: 'traffic', car, closing, fatal });

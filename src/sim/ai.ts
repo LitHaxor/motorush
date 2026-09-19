@@ -129,8 +129,15 @@ export function aiInput(r: Racer, world: AiWorldView, dt: number): RacerInput {
   const cap = speedCap(r, world.track);
   let targetSpeed: number;
   if (r.kind === 'cop') {
-    // Cops pace the player and close the gap, but are not infinitely fast.
-    targetSpeed = Math.min(cap, Math.max(world.player.speed + 7, BIKE.maxSpeed * 0.72));
+    const gap = world.player.s - r.s;
+    if (world.player.state === 'down') {
+      // Ease up and park next to the rider on the floor rather than
+      // overshooting them at 250 km/h.
+      targetSpeed = clamp(gap * 1.4, 0, cap);
+    } else {
+      // Otherwise pace them and close the gap, but not infinitely fast.
+      targetSpeed = Math.min(cap, Math.max(world.player.speed + 7, BIKE.maxSpeed * 0.72));
+    }
   } else {
     targetSpeed = cap * clamp(catchupScale(r, world.player), 0.82, 1.12);
   }

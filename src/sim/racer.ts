@@ -71,6 +71,10 @@ export function createRacer({
     // Bookkeeping / visuals
     wheelAngle: 0,
     bumpCooldown: 0,
+    riderThrow: 0,
+    riderThrowTarget: 0,
+    riderLateralThrow: 0,
+    riderPhase: 'tumble',
     place: 1,
     finishTime: null,
     knockdowns: 0,
@@ -96,10 +100,21 @@ export function knockDown(r: Racer, severity = 0.6, downTime: number | null = nu
   const sev = clamp(severity, 0, 1);
   r.state = 'down';
   r.downSeverity = sev;
-  const base = r.kind === 'player' ? CRASH.playerDownTime : CRASH.rivalDownTime;
-  // A heavier get-off keeps you down longer.
-  r.downTimer = downTime ?? base * (1 + sev * CRASH.severityTimeGain);
-  // Keep most of the speed: you tumble down the road rather than stopping dead.
+
+  // The rider comes off and is thrown down the road; how far depends on how
+  // fast they were going. The bike slides separately.
+  r.riderThrowTarget = clamp(r.speed * CRASH.throwPerSpeed, CRASH.throwMin, CRASH.throwMax);
+  r.riderThrow = 0;
+  // Go down at the edge of the road and you go over the barrier with it, so
+  // the rider has to come back across before they can reach the bike.
+  r.riderLateralThrow = Math.sign(r.lateral || 1) * sev * CRASH.lateralThrow;
+  r.riderPhase = 'tumble';
+
+  const scale = r.kind === 'player' ? 1 : CRASH.rivalTumbleScale;
+  r.downTimer =
+    (downTime ?? (CRASH.tumbleTime + sev * CRASH.tumbleSeverityGain)) * scale;
+
+  // Keep most of the speed: the bike tumbles on rather than stopping dead.
   r.speed *= CRASH.slideRetain;
   r.stagger = 0;
   r.attackTimer = 0;
@@ -116,6 +131,10 @@ export function remount(r: Racer, track: Track): void {
   r.lateral = clamp(r.lateral, -limit, limit);
   r.lean = 0;
   r.downSeverity = 0;
+  r.riderThrow = 0;
+  r.riderThrowTarget = 0;
+  r.riderLateralThrow = 0;
+  r.riderPhase = 'tumble';
   if (r.health <= 0) {
     r.health = r.kind === 'player' ? HEALTH.max * 0.35 : CRASH.rivalRespawnHealth;
   }

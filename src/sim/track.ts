@@ -124,8 +124,28 @@ export class Track {
     return { i, t: f - i };
   }
 
-  /** Interpolated centreline sample. Pass `out` to avoid an allocation. */
+  /**
+   * Interpolated centreline sample. Pass `out` to avoid an allocation.
+   *
+   * Distances outside the baked range are extrapolated along the end heading
+   * rather than clamped - the starting grid sits behind s=0 and the chase
+   * camera sits behind that, so collapsing them onto the first sample would
+   * stack the whole field on one spot.
+   */
   sampleAt(s: number, out: TrackSample = { x: 0, y: 0, z: 0, heading: 0, curvature: 0 }): TrackSample {
+    if (s < 0 || s > this.length) {
+      const atStart = s < 0;
+      const edge = atStart ? 0 : this.count - 1;
+      const overshoot = atStart ? s : s - this.length;
+      const heading = this.headings[edge];
+      // forward = (-sin h, 0, -cos h)
+      out.x = this.xs[edge] + -Math.sin(heading) * overshoot;
+      out.y = this.ys[edge];
+      out.z = this.zs[edge] + -Math.cos(heading) * overshoot;
+      out.heading = heading;
+      out.curvature = 0;
+      return out;
+    }
     const { i, t } = this.indexAt(s);
     const j = i + 1;
     out.x = this.xs[i] + (this.xs[j] - this.xs[i]) * t;
@@ -134,6 +154,16 @@ export class Track {
     out.heading = this.headings[i] + (this.headings[j] - this.headings[i]) * t;
     out.curvature = this.curvatures[i] + (this.curvatures[j] - this.curvatures[i]) * t;
     return out;
+  }
+
+  /**
+   * Gradient of the road at `s`: positive is uphill, and it is a plain rise
+   * over run (0.05 is a 5% climb). Taken from the baked samples so it always
+   * matches the geometry the player can see.
+   */
+  slopeAt(s: number): number {
+    const { i } = this.indexAt(s);
+    return (this.ys[i + 1] - this.ys[i]) / this.step;
   }
 
   curvatureAt(s: number): number {
