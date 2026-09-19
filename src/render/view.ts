@@ -451,7 +451,8 @@ export class GameView {
         this.bikeRigs.set(r.id, bike);
         this.scene.add(bike.root);
 
-        const rider = createRiderRig(r.color, r.kind === 'cop' ? 0xdfe4ea : 0xf0f0ea, r.kind);
+        const accent = r.kind === 'cop' ? 0xdfe4ea : 0xf0f0ea;
+        const rider = createRiderRig(r.color, accent, r.kind);
         this.riderRigs.set(r.id, rider);
         bike.chassis.add(rider.root);
         rider.root.position.copy(bike.seatOffset);

@@ -15,7 +15,9 @@ export const CAR_TYPES: readonly CarType[] = [
   { key: 'hatch', length: 4.0, width: 1.85, height: 1.5, weight: 3 },
   { key: 'van', length: 5.4, width: 2.05, height: 2.25, weight: 2 },
   { key: 'truck', length: 8.6, width: 2.35, height: 3.1, weight: 1.4 },
-  { key: 'bus', length: 10.5, width: 2.4, height: 3.3, weight: 0.8 },
+  // No bus in the model kit, so this is a long coach-style van rather
+  // than a full bus - stretching a 3 m model to 10.5 m looks absurd.
+  { key: 'bus', length: 7.8, width: 2.35, height: 3.1, weight: 0.8 },
 ];
 
 export const CAR_COLORS = [

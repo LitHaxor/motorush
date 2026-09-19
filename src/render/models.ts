@@ -176,16 +176,63 @@ export function instanceModel(
   return out;
 }
 
-/** Clone a model into a fresh group, scaled so its length matches `targetLength`. */
-export function instantiateScaled(model: LoadedModel, targetLength: number): THREE.Group {
+export interface BoxDims {
+  length: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * How to fit a model to a target bounding box.
+ *
+ * Two traps here, both of which made the traffic look wrong:
+ *
+ * 1. Which axis the length runs along is not consistent across asset kits, so
+ *    we take the longer horizontal axis and rotate if it was X.
+ * 2. Low-poly kits draw stubby cars - Kenney's sedan is 2.55 long by 1.5 wide,
+ *    a 1.7:1 ratio, where a real one is nearer 2.5:1. Scaling uniformly by
+ *    length therefore inflates the width and height by the same 1.8x and you
+ *    get a car taller than the rider. Scaling each axis to the simulation's
+ *    own dimensions fixes that, and has the bonus that what you see is exactly
+ *    the box you collide with.
+ */
+export function fitToBox(
+  size: { x: number; y: number; z: number },
+  target: BoxDims,
+): { scale: THREE.Vector3; rotateY: number } {
+  const lengthAlongX = size.x > size.z;
+  const modelLength = Math.max(0.001, lengthAlongX ? size.x : size.z);
+  const modelWidth = Math.max(0.001, lengthAlongX ? size.z : size.x);
+  const modelHeight = Math.max(0.001, size.y);
+
+  const alongLength = target.length / modelLength;
+  const alongWidth = target.width / modelWidth;
+  const alongHeight = target.height / modelHeight;
+
+  // Scale is expressed in the model's own axes, before any rotation.
+  const scale = lengthAlongX
+    ? new THREE.Vector3(alongLength, alongHeight, alongWidth)
+    : new THREE.Vector3(alongWidth, alongHeight, alongLength);
+
+  return { scale, rotateY: lengthAlongX ? Math.PI / 2 : 0 };
+}
+
+/** Clone a model into a fresh group, sized to the given bounding box. */
+export function instantiateScaled(model: LoadedModel, target: BoxDims): THREE.Group {
   const group = new THREE.Group();
+  const { scale, rotateY } = fitToBox(model.size, target);
+
   const clone = model.scene.clone(true);
-  const scale = model.size.z > 0.001 ? targetLength / model.size.z : 1;
-  clone.scale.setScalar(scale);
+  clone.scale.copy(scale);
   // Sit the model on the ground and centre it on its own footprint.
-  clone.position.y = -model.box.min.y * scale;
-  clone.position.x = -((model.box.min.x + model.box.max.x) / 2) * scale;
-  clone.position.z = -((model.box.min.z + model.box.max.z) / 2) * scale;
-  group.add(clone);
+  clone.position.y = -model.box.min.y * scale.y;
+  clone.position.x = -((model.box.min.x + model.box.max.x) / 2) * scale.x;
+  clone.position.z = -((model.box.min.z + model.box.max.z) / 2) * scale.z;
+
+  // Rotate after centring, so the long axis ends up running down the road.
+  const oriented = new THREE.Group();
+  oriented.rotation.y = rotateY;
+  oriented.add(clone);
+  group.add(oriented);
   return group;
 }

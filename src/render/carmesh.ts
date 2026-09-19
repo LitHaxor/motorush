@@ -63,7 +63,11 @@ export function createCarFromModel(model: LoadedModel, type: CarType): CarRig {
   const root = new THREE.Group();
   root.name = `car-${type.key}-${model.name}`;
 
-  const body = instantiateScaled(model, type.length);
+  const body = instantiateScaled(model, {
+    length: type.length,
+    width: type.width,
+    height: type.height,
+  });
   body.rotation.y = MODEL_YAW;
   body.traverse((o) => {
     const m = o as THREE.Mesh;

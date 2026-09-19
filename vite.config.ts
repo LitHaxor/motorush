@@ -23,7 +23,7 @@ export default defineConfig({
     include: ['tests/unit/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/sim/**/*.ts'],
+      include: ['src/sim/**/*.ts', 'src/render/models.ts'],
       exclude: ['src/sim/types.ts'],
       reporter: ['text', 'html', 'lcov'],
       thresholds: {
