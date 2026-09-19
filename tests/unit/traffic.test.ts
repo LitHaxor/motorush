@@ -209,3 +209,63 @@ describe('racer-on-racer contact', () => {
     expect(collideRacers([a, b])).toHaveLength(0);
   });
 });
+
+describe('cars vs. cars', () => {
+  /** Two cars nose to tail in one lane, the trailing one much faster. */
+  function convoy(leadSpeed: number, chaseSpeed: number, gap: number) {
+    const track = new Track({ seed: 4, length: 4000 });
+    const sys = new TrafficSystem(track, makeRng(9), { density: 1 });
+    for (const c of sys.cars) c.active = false;
+    const [lead, chase] = sys.cars;
+    for (const [c, s, speed] of [[lead, 500 + gap, leadSpeed], [chase, 500, chaseSpeed]] as const) {
+      c.active = true;
+      c.dir = 1;
+      c.laneIndex = 0;
+      c.s = s;
+      c.lateral = 3;
+      c.speed = speed;
+      c.cruise = speed;
+      c.swerve = 0;
+      c.brake = 0;
+    }
+    return { sys, lead, chase };
+  }
+
+  it('brakes rather than driving through the car in front', () => {
+    const { sys, lead, chase } = convoy(10, 30, 26);
+    for (let i = 0; i < 240; i++) sys.step(1 / 60, 400, i / 60);
+    expect(chase.speed).toBeLessThanOrEqual(lead.speed + 0.5);
+    expect(lead.s - chase.s).toBeGreaterThan(0);
+  });
+
+  it('never lets two cars end a frame inside each other', () => {
+    const { sys, lead, chase } = convoy(6, 34, 12);
+    let worst = Infinity;
+    for (let i = 0; i < 600; i++) {
+      sys.step(1 / 60, 400, i / 60);
+      if (!lead.active || !chase.active) break;
+      const bumper = (lead.s - chase.s) - (lead.type.length + chase.type.length) / 2;
+      worst = Math.min(worst, bumper);
+    }
+    expect(worst).toBeGreaterThanOrEqual(0);
+  });
+
+  it('leaves cars in other lanes alone', () => {
+    const { sys, lead, chase } = convoy(8, 32, 20);
+    chase.lateral = lead.lateral + 6; // a whole lane across
+    for (let i = 0; i < 90; i++) {
+      // Hold them apart laterally; the lane drift would otherwise close it.
+      chase.lateral = lead.lateral + 6;
+      sys.step(1 / 60, 400, i / 60);
+      chase.lateral = lead.lateral + 6;
+    }
+    expect(chase.brake).toBe(0);
+  });
+
+  it('ignores oncoming traffic, which is in the other carriageway', () => {
+    const { sys, lead, chase } = convoy(12, 30, 24);
+    lead.dir = -1;
+    for (let i = 0; i < 30; i++) sys.step(1 / 60, 400, i / 60);
+    expect(chase.brake).toBe(0);
+  });
+});

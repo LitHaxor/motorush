@@ -134,16 +134,21 @@ export class TrafficSystem {
           if (Math.abs(r.lateral - car.lateral) > TRAFFIC.avoidWidth) continue;
           const gap = r.s - car.s;
           if (gap < 0 || gap > TRAFFIC.lookAhead) continue;
-          // Only brake if we are actually catching them.
-          const closing = car.speed - r.speed;
-          if (closing <= 0) continue;
-          // How hard would we have to brake to shed the closing speed in the
-          // space available? A linear ramp is not enough - it lets the car
-          // sail straight into the back of a slow rider.
-          const room = Math.max(gap - TRAFFIC.followGap, 0.25);
-          const needed = (closing * closing) / (2 * room);
-          car.brake = Math.max(car.brake, clamp(needed / TRAFFIC.brakeDecel, 0, 1));
+          car.brake = Math.max(car.brake, brakeDemand(gap, car.speed - r.speed));
         }
+      }
+
+      // And they are not suicidal about each other either. Without this a
+      // faster car simply drives through the slow one in front: nothing in
+      // the sim ever compared one car against another.
+      for (const other of this.cars) {
+        if (other === car || !other.active || other.dir !== car.dir) continue;
+        if (Math.abs(other.lateral - car.lateral) > sideClearance(car, other)) continue;
+        // Bumper to bumper, along the direction this car is travelling.
+        const gap = (other.s - car.s) * car.dir - (car.type.length + other.type.length) / 2;
+        if (gap > TRAFFIC.lookAhead) continue;
+        if (gap <= 0) { car.brake = 1; continue; }
+        car.brake = Math.max(car.brake, brakeDemand(gap, car.speed - other.speed));
       }
       if (car.brake > 0) {
         const target = car.cruise * (1 - car.brake);
@@ -163,12 +168,53 @@ export class TrafficSystem {
         this.respawn(car, playerS);
       }
     }
+
+    this.separate();
+  }
+
+  /**
+   * Braking is a model and models run out of road: a car that spawns close
+   * behind a slow one, or a lane that narrows around a median, can still put
+   * two cars inside each other. This is the backstop - whatever happened
+   * during the frame, no two cars end it overlapping.
+   */
+  private separate(): void {
+    for (const car of this.cars) {
+      if (!car.active) continue;
+      for (const other of this.cars) {
+        if (other === car || !other.active || other.dir !== car.dir) continue;
+        const ahead = (other.s - car.s) * car.dir;
+        // Resolve each pair once, from the trailing car's point of view.
+        if (ahead <= 0) continue;
+        if (Math.abs(other.lateral - car.lateral) > sideClearance(car, other)) continue;
+        const minGap = (car.type.length + other.type.length) / 2 + 0.6;
+        if (ahead >= minGap) continue;
+        car.s = other.s - car.dir * minGap;
+        if (car.speed > other.speed) car.speed = other.speed;
+      }
+    }
   }
 
   /** Signed longitudinal velocity in track space. */
   static velocity(car: Car): number {
     return car.speed * car.dir;
   }
+}
+
+/**
+ * How hard this driver has to brake, as a fraction of full braking, to shed
+ * `closing` over `gap` metres. A linear ramp is not enough - it lets a car
+ * sail straight into the back of whatever it is catching.
+ */
+function brakeDemand(gap: number, closing: number): number {
+  if (closing <= 0) return 0;
+  const room = Math.max(gap - TRAFFIC.followGap, 0.25);
+  return clamp((closing * closing) / (2 * room) / TRAFFIC.brakeDecel, 0, 1);
+}
+
+/** Lateral distance at which two cars count as sharing a lane. */
+function sideClearance(a: Car, b: Car): number {
+  return (a.type.width + b.type.width) / 2 + 0.3;
 }
 
 /**
