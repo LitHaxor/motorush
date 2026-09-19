@@ -71,6 +71,7 @@ export function createRacer({
     // Bookkeeping / visuals
     wheelAngle: 0,
     bumpCooldown: 0,
+    scrapeCooldown: 0,
     riderThrow: 0,
     riderThrowTarget: 0,
     riderLateralThrow: 0,

@@ -3,12 +3,33 @@
 // corners push you toward the outside quadratically.
 
 import { BIKE, CRASH, HEALTH, TRACK } from './config';
+import type { Car } from './types';
 import { clamp, damp } from './mathx';
 import { isRiding, knockDown, remount, damageRacer, speedCap } from './racer';
 import type { Track } from './track';
 import type { Racer, RacerInput, SimEvent } from './types';
 
 const GRAVITY = 9.81;
+
+/**
+ * Stand-in "vehicle" for a barrier scrape, so the event carries the same shape
+ * as a scrape against traffic and the renderer needs no special case.
+ */
+const BARRIER: Car = {
+  id: -1,
+  s: 0,
+  lateral: 0,
+  speed: 0,
+  dir: 1,
+  type: { key: 'barrier', length: 1, width: 0.2, height: 0.9, weight: 0 },
+  color: 0x9aa0a6,
+  laneIndex: 0,
+  active: false,
+  swerve: 0,
+  swervePhase: 0,
+  cruise: 0,
+  brake: 0,
+};
 
 export const NEUTRAL_INPUT: Readonly<RacerInput> = Object.freeze({
   throttle: 0,
@@ -43,6 +64,7 @@ function tickTimers(r: Racer, dt: number): void {
   if (r.stagger === 0) r.staggerPush = 0;
   r.sinceDamage += dt;
   r.bumpCooldown = Math.max(0, r.bumpCooldown - dt);
+  r.scrapeCooldown = Math.max(0, r.scrapeCooldown - dt);
   if (r.attackTimer > 0) r.attackTimer = Math.max(0, r.attackTimer - dt);
 }
 
@@ -187,10 +209,27 @@ export function stepRacer(
 
   // Barrier / scenery strike at the very edge of the corridor.
   if (track.isOutOfBounds(r.lateral, r.s)) {
+    const into = Math.sign(r.lateral || 1);
     r.lateral = track.clampLateral(r.lateral, r.s);
-    const fatal = damageRacer(r, HEALTH.barrierDamage);
-    if (knockDown(r, 0.85)) {
-      events.push({ type: 'crash', racer: r, cause: 'barrier', fatal });
+
+    if (r.speed > CRASH.barrierCrashSpeed) {
+      const fatal = damageRacer(r, HEALTH.barrierDamage);
+      if (knockDown(r, 0.85)) {
+        events.push({ type: 'crash', racer: r, cause: 'barrier', fatal });
+      }
+      return events;
+    }
+
+    // Slow enough to just scrape along it: lose speed, get nudged back onto
+    // the road, stay on two wheels. Rate-limited, or grinding along a rail
+    // re-damages you sixty times a second and kills you at walking pace.
+    r.staggerPush = -into * 2.2;
+    if (r.scrapeCooldown <= 0) {
+      r.scrapeCooldown = CRASH.scrapeInterval;
+      r.speed *= 0.72;
+      const fatal = damageRacer(r, HEALTH.scrapeDamage * 0.3);
+      events.push({ type: 'scrape', racer: r, car: BARRIER, fatal });
+      if (fatal) knockDown(r, 0.5);
     }
     return events;
   }

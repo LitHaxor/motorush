@@ -78,6 +78,8 @@ export interface Racer {
 
   wheelAngle: number;
   bumpCooldown: number;
+  /** Stops a sustained barrier graze re-damaging you every single tick. */
+  scrapeCooldown: number;
   /** Metres the rider is currently separated from their bike. */
   riderThrow: number;
   riderThrowTarget: number;

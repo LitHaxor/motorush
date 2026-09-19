@@ -141,6 +141,8 @@ export function buildScenery(
       for (let s = seg.from + 12; s < seg.to - 12; s += rng.range(7, 16)) {
         const median = track.medianAt(s);
         if (median < 4) continue;
+        // In town the island is a city block, handled with the buildings.
+        if (biomeAt(biomes, s) === 'city') continue;
         const pick = rng.chance(0.45) ? 'bush' : biomeAt(biomes, s) === 'jungle' ? 'jungle' : 'conifer';
         const pool = bySpecies.get(pick as TreeSpecies) ?? bySpecies.get('bush') ?? [0];
         const kind = pool[Math.floor(rng() * pool.length)];
@@ -411,6 +413,36 @@ export function buildScenery(
   const bv = new THREE.Vector3();
   const bs = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
+
+  // A fork running through town splits around a block of buildings, not a
+  // stand of trees.
+  for (const fork of track.divided) {
+    if (!fork.fork) continue;
+    let s = fork.from + 20;
+    while (s < fork.to - 20) {
+      if (biomeAt(biomes, s) !== 'city') {
+        s += 20;
+        continue;
+      }
+      const median = track.medianAt(s);
+      const idx = rng.int(0, PROTOTYPES.length - 1);
+      const proto = PROTOTYPES[idx];
+      // Only what actually fits between the carriageways.
+      const room = (median - 1.5) * 2;
+      if (room < 8) {
+        s += 20;
+        continue;
+      }
+      const jitter = Math.min(rng.range(0.85, 1.15), room / proto.w, room / proto.d);
+      const width = proto.w * jitter;
+      const at = track.toWorld(s + width / 2, 0);
+      bv.set(at.x, at.y + (proto.h * jitter) / 2 - 0.4, at.z);
+      bq.setFromAxisAngle(up, at.heading);
+      bs.set(jitter, jitter, jitter);
+      buildingSlots[idx].push(bm.compose(bv, bq, bs).clone());
+      s += width + rng.range(2, 7);
+    }
+  }
 
   for (const seg of biomes) {
     // Buildings belong to the city, not to every biome.

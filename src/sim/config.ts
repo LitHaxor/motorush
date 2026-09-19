@@ -98,6 +98,14 @@ export const HEALTH = {
 export const CRASH = {
   /** Closing speed above which a collision becomes a full crash. */
   hardImpactSpeed: 15,
+  /**
+   * Speed above which clipping the barrier throws you off. Below it you just
+   * grind along it and lose speed - being binned at walking pace for touching
+   * a guardrail is not a crash, it is an annoyance.
+   */
+  barrierCrashSpeed: 18,
+  /** Minimum gap between barrier scrapes doing damage. */
+  scrapeInterval: 0.4,
   playerDownTime: 2.3,
   rivalDownTime: 2.9,
   knockoutDownTime: 3.6,

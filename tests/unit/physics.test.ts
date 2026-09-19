@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Track } from '../../src/sim/track';
 import { createRacer, speedCap, knockDown } from '../../src/sim/racer';
 import { stepRacer, corneringDrift, steerAuthority, NEUTRAL_INPUT } from '../../src/sim/physics';
-import { BIKE, HEALTH, TRACK } from '../../src/sim/config';
+import { BIKE, CRASH, HEALTH, TRACK } from '../../src/sim/config';
 import type { RacerInput } from '../../src/sim/types';
 
 const track = new Track({ seed: 4, length: 3000, divided: false });
@@ -300,5 +300,44 @@ describe('physics: the crash recovery sequence', () => {
       return t;
     };
     expect(timeFor(1)).toBeLessThan(timeFor(0));
+  });
+});
+
+describe('physics: hitting the barrier', () => {
+  const edge = TRACK.halfWidth + TRACK.shoulder;
+
+  it('does not bin you for touching a guardrail at walking pace', () => {
+    const r = createRacer({ id: 1, speed: 6, lateral: edge - 0.1 });
+    const events = run(r, input({ throttle: 0, steer: 1 }), 1.5);
+    expect(r.state).toBe('ride');
+    expect(events.some((e) => e.type === 'crash')).toBe(false);
+    expect(events.some((e) => e.type === 'scrape')).toBe(true);
+    // Pushed back inside the corridor rather than left stuck in it.
+    expect(Math.abs(r.lateral)).toBeLessThanOrEqual(edge + 1e-6);
+  });
+
+  it('still throws you off if you hit it at speed', () => {
+    const r = createRacer({ id: 1, speed: 55, lateral: edge - 0.1 });
+    const events = run(r, input({ throttle: 1, steer: 1 }), 1);
+    expect(r.state).toBe('down');
+    const crash = events.find((e) => e.type === 'crash');
+    expect(crash && 'cause' in crash && crash.cause).toBe('barrier');
+  });
+
+  it('scrubs speed on a low-speed scrape', () => {
+    const r = createRacer({ id: 1, speed: 12, lateral: edge - 0.05 });
+    run(r, input({ throttle: 0, steer: 1 }), 0.3);
+    expect(r.speed).toBeLessThan(12);
+    expect(r.state).toBe('ride');
+  });
+
+  it('marks the boundary at the configured speed', () => {
+    const under = createRacer({ id: 1, speed: CRASH.barrierCrashSpeed - 3, lateral: edge - 0.05 });
+    run(under, input({ throttle: 0, steer: 1 }), 0.3);
+    expect(under.state).toBe('ride');
+
+    const over = createRacer({ id: 2, speed: CRASH.barrierCrashSpeed + 5, lateral: edge - 0.05 });
+    run(over, input({ throttle: 0, steer: 1 }), 0.3);
+    expect(over.state).toBe('down');
   });
 });

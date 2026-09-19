@@ -13,6 +13,8 @@ import type { Track } from './track';
 
 const LANE_CANDIDATES = [-7.2, -4.6, -2.1, 0, 2.1, 4.6, 7.2];
 const PLAN_INTERVAL = 0.22;
+/** How far ahead the AI reads the road layout, in metres. */
+const LOOKAHEAD = 110;
 
 /** The slice of the World the AI is allowed to see. */
 export interface AiWorldView {
@@ -57,13 +59,23 @@ function planLane(r: Racer, world: AiWorldView, ai: AiState): void {
   let bestLateral = r.lateral;
 
   // Where a median splits the road the lanes move outward, and the middle is
-  // no longer a place you can ride.
+  // no longer a place you can ride. Look ahead as well as underfoot: a fork
+  // has to be committed to before it opens, or the rider arrives at the island
+  // still straddling the middle.
   const median = track.medianAt(r.s);
-  const edge = track.edgeAt(r.s);
+  const ahead = Math.max(median, track.medianAt(r.s + LOOKAHEAD));
+  const edge = Math.min(track.edgeAt(r.s), track.edgeAt(r.s + LOOKAHEAD));
+  // Commit to the side already being ridden; near the middle, take the right,
+  // which is the side the race runs on.
+  const committed = ahead > 0 ? (r.lateral > 1 ? 1 : r.lateral < -3 ? -1 : 1) : 0;
+
   for (const base of LANE_CANDIDATES) {
-    const cand = base + Math.sign(base) * median;
+    const cand = base + Math.sign(base) * ahead;
     if (Math.abs(cand) > edge - 1.2) continue;
-    if (median > 0 && Math.abs(cand) < median + 0.8) continue;
+    if (ahead > 0) {
+      if (committed !== 0 && Math.sign(cand) !== committed) continue;
+      if (Math.abs(cand) < ahead + 1.2) continue;
+    }
     let score = clearAhead(r.s, cand, traffic);
     // Staying on the tarmac and not swerving wildly are both worth something.
     score -= Math.abs(cand - r.lateral) * 1.6;
