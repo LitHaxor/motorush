@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.vercel/
+test-results/
+playwright-report/
+blob-report/
+.DS_Store
+*.local
+.env*
+!.env.example

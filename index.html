@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#0b0d12" />
+    <title>RoadBrush — Arcade Motorcycle Combat Racer</title>
+    <meta name="description" content="A Road Rash style arcade motorcycle combat racer built with Three.js. Race eight riders, brawl at 250 km/h, and outrun the highway patrol." />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏍️</text></svg>" />
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+
+    <!-- ================= HUD ================= -->
+    <div id="hud" class="hud" hidden>
+      <div class="hud__corner hud__corner--tl">
+        <div class="place"><span id="hud-place">1ST</span><small id="hud-field">/ 8</small></div>
+        <div class="timer" id="hud-timer">0:00.000</div>
+      </div>
+
+      <div class="hud__corner hud__corner--tr">
+        <div class="progress">
+          <div class="progress__label"><span id="hud-distance">0</span> / <span id="hud-total">0</span> m</div>
+          <div class="progress__track"><div class="progress__fill" id="hud-progress"></div></div>
+        </div>
+      </div>
+
+      <div class="hud__corner hud__corner--bl">
+        <div class="health">
+          <div class="health__label">CONDITION</div>
+          <div class="health__track"><div class="health__fill" id="hud-health"></div></div>
+        </div>
+        <div class="pills">
+          <span class="pill pill--weapon" id="hud-weapon" hidden>CLUB</span>
+          <span class="pill pill--boost" id="hud-boost" hidden>NITRO</span>
+        </div>
+      </div>
+
+      <div class="hud__corner hud__corner--br">
+        <div class="speedo">
+          <span class="speedo__value" id="hud-speed">0</span>
+          <span class="speedo__unit">KM/H</span>
+        </div>
+      </div>
+
+      <!-- Police pursuit -->
+      <div class="pursuit" id="hud-pursuit" hidden>
+        <div class="pursuit__title">⚠ HIGHWAY PATROL</div>
+        <div class="pursuit__track"><div class="pursuit__fill" id="hud-bust"></div></div>
+        <div class="pursuit__hint" id="hud-pursuit-hint">OUTRUN THEM</div>
+      </div>
+
+      <div class="heat" id="hud-heat" hidden>
+        <span class="heat__label">HEAT</span>
+        <div class="heat__track"><div class="heat__fill" id="hud-heat-fill"></div></div>
+      </div>
+
+      <div class="centre" id="hud-centre"></div>
+      <div class="toasts" id="hud-toasts"></div>
+      <div class="damage-flash" id="hud-flash"></div>
+
+      <!-- Touch controls -->
+      <div class="touch" id="touch-controls" hidden>
+        <div class="touch__pad touch__pad--left">
+          <button class="touch__btn" data-touch="left" aria-label="Steer left">◀</button>
+          <button class="touch__btn" data-touch="right" aria-label="Steer right">▶</button>
+        </div>
+        <div class="touch__pad touch__pad--right">
+          <button class="touch__btn touch__btn--punch" data-touch="attack-left" aria-label="Punch left">✊</button>
+          <button class="touch__btn touch__btn--punch" data-touch="attack-right" aria-label="Punch right">✊</button>
+          <button class="touch__btn touch__btn--brake" data-touch="brake" aria-label="Brake">BRAKE</button>
+          <button class="touch__btn touch__btn--gas" data-touch="throttle" aria-label="Throttle">GAS</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= SCREENS ================= -->
+    <div id="screens" class="screens">
+      <!-- Loading -->
+      <section class="screen screen--loading" id="screen-loading">
+        <div class="loader">
+          <div class="loader__mark">RB</div>
+          <div class="loader__bar"><div class="loader__fill"></div></div>
+          <p class="loader__text" id="loading-text">WARMING UP THE ENGINE…</p>
+        </div>
+      </section>
+
+      <!-- Splash / main menu -->
+      <section class="screen screen--splash art art--splash" id="screen-splash" hidden>
+        <div class="splash">
+          <h1 class="logo">
+            <span class="logo__road">ROAD</span><span class="logo__brush">BRUSH</span>
+          </h1>
+          <p class="tagline">EIGHT RIDERS. NO RULES. ONE ROAD.</p>
+
+          <div class="menu">
+            <label class="field">
+              <span class="field__label">RIDER NAME</span>
+              <input id="rider-name" class="field__input" maxlength="12" value="YOU" autocomplete="off" spellcheck="false" />
+            </label>
+
+            <div class="field">
+              <span class="field__label">DIFFICULTY</span>
+              <div class="choices" id="difficulty-choices" role="radiogroup" aria-label="Difficulty">
+                <button class="choice" data-difficulty="easy" role="radio" aria-checked="false">ROOKIE</button>
+                <button class="choice is-active" data-difficulty="normal" role="radio" aria-checked="true">RASHER</button>
+                <button class="choice" data-difficulty="hard" role="radio" aria-checked="false">OUTLAW</button>
+              </div>
+            </div>
+
+            <button class="btn btn--primary" id="btn-start">TWIST THE THROTTLE</button>
+            <button class="btn btn--ghost" id="btn-controls">CONTROLS</button>
+          </div>
+
+          <div class="controls-card" id="controls-card" hidden>
+            <h2>CONTROLS</h2>
+            <dl class="keys">
+              <div><dt>W / ↑</dt><dd>Throttle</dd></div>
+              <div><dt>S / ↓</dt><dd>Brake</dd></div>
+              <div><dt>A D / ← →</dt><dd>Steer</dd></div>
+              <div><dt>Q / E</dt><dd>Punch left / right</dd></div>
+              <div><dt>F</dt><dd>Punch nearest rider</dd></div>
+              <div><dt>P / Esc</dt><dd>Pause</dd></div>
+              <div><dt>M</dt><dd>Mute</dd></div>
+            </dl>
+            <p class="hint">Gamepad and touch are supported. Hold the throttle as the lights go out for a launch boost.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Pause -->
+      <section class="screen screen--pause" id="screen-pause" hidden>
+        <div class="panel">
+          <h2 class="panel__title">PAUSED</h2>
+          <button class="btn btn--primary" id="btn-resume">RESUME</button>
+          <button class="btn btn--ghost" id="btn-restart-pause">RESTART RACE</button>
+          <button class="btn btn--ghost" id="btn-quit">QUIT TO MENU</button>
+        </div>
+      </section>
+
+      <!-- Busted -->
+      <section class="screen screen--busted art art--busted" id="screen-busted" hidden>
+        <div class="verdict">
+          <div class="verdict__stamp verdict__stamp--busted">BUSTED</div>
+          <p class="verdict__blurb">The highway patrol pulled you over. Bike impounded, race over.</p>
+          <dl class="stats" id="busted-stats"></dl>
+          <div class="verdict__actions">
+            <button class="btn btn--primary" data-action="restart">RIDE AGAIN</button>
+            <button class="btn btn--ghost" data-action="menu">MAIN MENU</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Wasted -->
+      <section class="screen screen--wasted art art--wasted" id="screen-wasted" hidden>
+        <div class="verdict">
+          <div class="verdict__stamp verdict__stamp--wasted">WASTED</div>
+          <p class="verdict__blurb">You took one beating too many. The pack rides on without you.</p>
+          <dl class="stats" id="wasted-stats"></dl>
+          <div class="verdict__actions">
+            <button class="btn btn--primary" data-action="restart">RIDE AGAIN</button>
+            <button class="btn btn--ghost" data-action="menu">MAIN MENU</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Finish (winner or placed) -->
+      <section class="screen screen--finish art art--winner" id="screen-finish" hidden>
+        <div class="verdict">
+          <div class="verdict__stamp" id="finish-stamp">1ST</div>
+          <p class="verdict__blurb" id="finish-blurb">You took the win.</p>
+          <ol class="results" id="finish-results"></ol>
+          <dl class="stats" id="finish-stats"></dl>
+          <div class="verdict__actions">
+            <button class="btn btn--primary" data-action="restart">RACE AGAIN</button>
+            <button class="btn btn--ghost" data-action="menu">MAIN MENU</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <button class="mute" id="btn-mute" aria-label="Toggle sound">🔊</button>
+    <div class="grain" aria-hidden="true"></div>
+    <div class="vignette" aria-hidden="true"></div>
+
+    <noscript>
+      <p style="color:#fff;font:16px system-ui;padding:2rem">RoadBrush needs JavaScript and WebGL to run.</p>
+    </noscript>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
