@@ -9,7 +9,11 @@ import { aiInput, createAiState } from '../../src/sim/ai';
 import type { DifficultyKey } from '../../src/sim/types';
 
 const DT = 1 / 60;
-const SEEDS = [1, 42, 777, 2024, 31337, 88, 1234, 5, 66, 909, 4242, 31];
+// Twelve seeds was too small a sample to assert a 50% finish floor against:
+// at the ~65% the curve actually sits at, a twelve-seed run lands below the
+// bar about one time in eight purely by chance, and any retune reshuffles the
+// draw. Forty-eight costs a couple of seconds and makes the estimate stable.
+const SEEDS = Array.from({ length: 48 }, (_, i) => i * 37 + 1);
 
 interface Summary {
   finished: number;

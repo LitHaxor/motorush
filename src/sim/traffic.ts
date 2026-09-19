@@ -88,7 +88,7 @@ export class TrafficSystem {
     } else if (dir === 1 && rng.chance(0.25)) {
       s = playerS - rng.range(60, TRAFFIC.spawnBehind); // overtaken from behind
     } else {
-      s = playerS + rng.range(TRAFFIC.spawnAhead * 0.55, TRAFFIC.spawnAhead);
+      s = playerS + rng.range(TRAFFIC.spawnAhead * TRAFFIC.spawnAheadNear, TRAFFIC.spawnAhead);
     }
 
     // Keep a gap so cars never spawn stacked inside each other.

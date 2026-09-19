@@ -159,8 +159,21 @@ export const CRASH = {
 export const TRAFFIC = {
   // Road Rash traffic is sparse - an occasional car to dodge, not a jam.
   // Density is what makes the road readable at 250 km/h.
-  count: 10,
-  spawnAhead: 460,
+  // Tuned against the spawn window below. Pushing spawns further out makes
+  // each car live longer, so the count had to come up to keep the road from
+  // emptying; 12 lands on the same cars-per-100m the old 460 m window gave,
+  // and a 48-seed balance sweep finishes at the same rate it used to.
+  count: 12,
+  /**
+   * Cars recycle in this far ahead. It has to be past the point where you can
+   * see one arrive: at the old 253 m a car was twenty pixels of solid colour
+   * appearing on empty tarmac. Out here the fog has most of it, and what is
+   * left is small enough that you read it as "traffic up ahead" rather than as
+   * something that popped into being.
+   */
+  spawnAhead: 760,
+  /** How much of the window ahead is eligible: the far 18% of it. */
+  spawnAheadNear: 0.82,
   spawnBehind: 150,
   minGap: 70,
   sameDirSpeed: [17, 29] as [number, number],
