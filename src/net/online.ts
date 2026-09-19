@@ -88,6 +88,8 @@ export class Ticker {
 /** Everything the host puts on the wire each tick. */
 export interface BroadcastSource {
   racers: readonly Racer[];
+  /** Patrols currently on the road; empty most of the time. */
+  cops: readonly Racer[];
   cars: readonly Car[];
   peds: readonly Pedestrian[];
   /** Where to centre the pedestrian cull - the host's own rider. */
@@ -286,6 +288,7 @@ export async function goOnline(
         race: source.race,
         countdown: source.countdown,
         racers: captureRacers(source.racers),
+        cops: captureRacers(source.cops),
         cars: captureCars(source.cars),
         peds: capturePeds(source.peds, source.aroundS),
       });

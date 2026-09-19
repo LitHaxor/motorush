@@ -218,6 +218,13 @@ describe('state flowing downhill', () => {
       id: 5, s: 300, lateral: 1, speed: 22, dir: 1 as const, brake: 0, swerve: 0.2,
       color: 0xff0000, type: { key: 'sedan', length: 4.5, width: 1.9, height: 1.45, weight: 4 },
     }],
+    cops: [{
+      id: 900, s: 60, lateral: 1, speed: 40, lean: 0, health: 100, hop: 0,
+      state: 'ride' as const, riderPhase: 'standing' as const,
+      attackDir: 0 as const, place: 8,
+    }],
+    peds: [],
+    aroundS: 0,
     time: 5.0,
     race: 'racing' as const,
     countdown: 0,
@@ -236,6 +243,8 @@ describe('state flowing downhill', () => {
     expect(drawn.racers[0]).toMatchObject({ id: 0, s: 10 });
     // Traffic rides along in the same frame, so a guest sees the same cars.
     expect(drawn.cars[0]).toMatchObject({ id: 5, s: 300, type: 'sedan' });
+    // ...and so do patrols, which a guest cannot see any other way.
+    expect(drawn.cops[0]).toMatchObject({ id: 900, s: 60 });
   });
 
   it('rate-limits the broadcast', async () => {

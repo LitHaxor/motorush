@@ -469,6 +469,7 @@ class Game {
 
     this.online?.broadcast({
       racers: this.world.racers,
+      cops: this.world.cop ? [this.world.cop] : [],
       cars: this.world.traffic.cars,
       peds: this.world.pedestrians,
       aroundS: this.world.player.s,
@@ -514,6 +515,9 @@ class Game {
     if (!frame) return;
 
     applyRacers(this.world.racers, frame.racers);
+    // Police are the host's business entirely; a guest just draws whichever
+    // patrols it is told about.
+    applyRacers(this.world.adoptCops(frame.cops.map((c) => c.id)), frame.cops);
     applyCars(this.world.traffic.cars, frame.cars);
     applyPeds(this.world.pedestrians, frame.peds);
 

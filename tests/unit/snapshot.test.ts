@@ -16,7 +16,7 @@ const racer = (id: number, over: Partial<RacerSnapshot> = {}): RacerSnapshot => 
 });
 
 const frame = (seq: number, time: number, racers: RacerSnapshot[], cars: CarSnapshot[] = []): StateMessage =>
-  ({ t: 'state', seq, time, race: 'racing', countdown: 0, racers, cars, peds: [] });
+  ({ t: 'state', seq, time, race: 'racing', countdown: 0, racers, cars, peds: [], cops: [] });
 
 describe('capturing the grid', () => {
   it('photographs every rider', () => {

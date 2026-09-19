@@ -718,3 +718,42 @@ describe('World: nobody shares a name', () => {
     expect(new World({ seed: 2, riderName: 'ACE' }).player.name).toBe('ACE');
   });
 });
+
+describe('World: patrols a guest was told about', () => {
+  it('creates one for an id it has never seen', () => {
+    // A guest never spawns police - heat and pursuit are the host's business -
+    // but it still has to draw them.
+    const w = new World({ seed: 5 });
+    const adopted = w.adoptCops([900]);
+    expect(adopted).toHaveLength(1);
+    expect(w.cop?.id).toBe(900);
+    expect(w.cop?.kind).toBe('cop');
+    expect(w.field).toContain(w.cop);
+  });
+
+  it('keeps the same patrol across frames rather than rebuilding it', () => {
+    const w = new World({ seed: 5 });
+    const first = w.adoptCops([900])[0];
+    expect(w.adoptCops([900])[0]).toBe(first);
+  });
+
+  it('drops the patrol when the host stops reporting it', () => {
+    const w = new World({ seed: 5 });
+    w.adoptCops([900]);
+    expect(w.adoptCops([])).toHaveLength(0);
+    expect(w.cop).toBeNull();
+    expect(w.field).toHaveLength(w.racers.length);
+  });
+
+  it('swaps to a new patrol when the id changes', () => {
+    const w = new World({ seed: 5 });
+    w.adoptCops([900]);
+    w.adoptCops([901]);
+    expect(w.cop?.id).toBe(901);
+  });
+
+  it('gives the adopted patrol a baton, like a spawned one', () => {
+    const w = new World({ seed: 5 });
+    expect(w.adoptCops([900])[0].weapon).toBe('baton');
+  });
+});

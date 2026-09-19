@@ -16,6 +16,10 @@ const STATE: StateMessage = {
     color: 0xff0000, type: 'sedan',
   }],
   peds: [[9, 120, 14.2, 0, 0]],
+  cops: [{
+    id: 900, s: 80, lateral: 2, speed: 45, lean: 0, health: 100, hop: 0,
+    state: 'ride', riderPhase: 'standing', attackDir: 0, place: 8,
+  }],
 };
 
 describe('round trip', () => {
@@ -47,6 +51,20 @@ describe('refusing rubbish off the wire', () => {
 
   it('drops a state frame with no racer list', () => {
     expect(decode('{"t":"state","seq":1}')).toBeNull();
+  });
+
+  it('treats a frame with no patrols as an empty road, not a bad frame', () => {
+    // Most of a race has no police in it at all.
+    const out = decode('{"t":"state","seq":1,"racers":[]}') as StateMessage;
+    expect(out.cops).toEqual([]);
+  });
+
+  it('carries a patrol so a guest can draw it', () => {
+    // Cops are not part of the grid the seed builds, so without this a guest
+    // simply could not see police.
+    const out = decode('{"t":"state","seq":1,"racers":[],"cops":[{"id":900,"s":12}]}') as StateMessage;
+    expect(out.cops).toHaveLength(1);
+    expect(out.cops[0]).toMatchObject({ id: 900, s: 12 });
   });
 
   it('treats a frame with no traffic as empty roads, not a bad frame', () => {

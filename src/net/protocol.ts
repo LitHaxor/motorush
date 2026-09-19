@@ -84,6 +84,14 @@ export interface StateMessage {
   race: RaceState;
   countdown: number;
   racers: RacerSnapshot[];
+  /**
+   * Patrols, kept apart from the racers.
+   *
+   * They come and go mid-race and are not part of the eight-rider grid every
+   * browser builds from the seed, so a guest has to be told they exist at all
+   * - without this they simply could not see police.
+   */
+  cops: RacerSnapshot[];
   cars: CarSnapshot[];
   peds: PedSnapshot[];
 }
@@ -125,13 +133,8 @@ export function decode(raw: string): NetMessage | null {
 
   if (m.t === 'state') {
     if (!Array.isArray(m.racers)) return null;
-    return {
-      t: 'state',
-      seq: num(m.seq),
-      time: num(m.time),
-      race: oneOf(m.race, RACE_STATES, 'racing'),
-      countdown: num(m.countdown),
-      racers: m.racers
+    const racerList = (v: unknown): RacerSnapshot[] =>
+      (Array.isArray(v) ? v : [])
         .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
         .map((r) => ({
           id: num(r.id, -1),
@@ -147,7 +150,15 @@ export function decode(raw: string): NetMessage | null {
           place: num(r.place, 1),
         }))
         // A racer with no id cannot be matched to anything on the grid.
-        .filter((r) => r.id >= 0),
+        .filter((r) => r.id >= 0);
+    return {
+      t: 'state',
+      seq: num(m.seq),
+      time: num(m.time),
+      race: oneOf(m.race, RACE_STATES, 'racing'),
+      countdown: num(m.countdown),
+      racers: racerList(m.racers),
+      cops: racerList(m.cops),
       cars: (Array.isArray(m.cars) ? m.cars : [])
         .filter((c): c is Record<string, unknown> => typeof c === 'object' && c !== null)
         .map((c) => ({

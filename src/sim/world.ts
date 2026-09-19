@@ -208,6 +208,39 @@ export class World implements AiWorldView {
     return this.cop ? [...this.racers, this.cop] : this.racers;
   }
 
+  /**
+   * Adopt the patrols the host says are out there.
+   *
+   * A guest never spawns police of its own - heat, pursuit and arrest are all
+   * decided by the host - but it still has to draw them, and they are not
+   * part of the eight-rider grid the seed builds. This creates a shell for
+   * each id the host reports and drops the ones it no longer does.
+   */
+  adoptCops(ids: readonly number[]): Racer[] {
+    if (ids.length === 0) {
+      this.cop = null;
+      return [];
+    }
+    // One patrol is all the rest of the sim is shaped for today; taking the
+    // first keeps this honest rather than half-supporting more.
+    const id = ids[0]!;
+    if (!this.cop || this.cop.id !== id) {
+      const cop = createRacer({
+        id,
+        kind: 'cop',
+        name: 'HIGHWAY PATROL',
+        color: 0x1c2b4a,
+        s: this.player.s,
+        lateral: this.player.lateral,
+        speed: this.player.speed,
+      });
+      cop.weapon = 'baton';
+      cop.weaponTimer = Infinity;
+      this.cop = cop;
+    }
+    return [this.cop];
+  }
+
   get isOver(): boolean {
     return this.state === 'finished' || this.state === 'busted' || this.state === 'wasted';
   }
