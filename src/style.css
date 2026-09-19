@@ -629,8 +629,18 @@ button { font-family: inherit; cursor: pointer; }
  * same information is on screen whatever you are playing on.
  */
 @media (max-width: 560px) {
-  /* The title plates are nowrap, so the only thing that can give is the size.
-     At 8.2vw the two of them ran off both edges of the screen. */
+  /* The splash art carries its own title, and `cover` scales it to fill a
+     tall screen - which crops the sides and takes half the title with them.
+     Fit the artwork instead; the gradient underneath fills what is left.
+     Layer order is [overlay, photo, ridges, gradient], so only the photo
+     changes. */
+  .art--splash {
+    background-size: cover, contain, 100% 100%, cover;
+    background-position: center, center top, center, center;
+  }
+
+  /* The text logo only appears when the art does not load, but the plates are
+     nowrap, so its size is the only thing that can give on a phone. */
   .logo { font-size: clamp(20px, 6.6vw, 40px); }
   .logo__plate:first-of-type { padding-right: 0.55em; }
   .logo__plate:last-of-type { padding-left: 0.5em; }
