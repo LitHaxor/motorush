@@ -52,6 +52,7 @@ export class Screens {
     this.wireSplash();
     this.wirePause();
     this.wireVerdicts();
+    detectArt();
   }
 
   private wireSplash(): void {
@@ -183,5 +184,28 @@ export class Screens {
 
     $('finish-stats').replaceChildren(...shared.map(([l, v]) => statTile(l, v)));
     this.show('finish');
+  }
+}
+
+/**
+ * Screens fall back to a gradient when their painting is missing, and the
+ * painting usually has the title lettered into it already. Probe each file and
+ * mark the screen when it loads, so the HTML heading can step aside rather
+ * than printing BUSTED over the top of a painted BUSTED.
+ */
+const ART: Record<string, string> = {
+  'screen-splash': '/art/splash.jpg',
+  'screen-busted': '/art/busted.jpg',
+  'screen-wasted': '/art/wasted.jpg',
+  'screen-finish': '/art/winner.jpg',
+};
+
+function detectArt(): void {
+  for (const [id, src] of Object.entries(ART)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const probe = new Image();
+    probe.onload = () => el.classList.add('has-art');
+    probe.src = src;
   }
 }

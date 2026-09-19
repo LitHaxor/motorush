@@ -240,10 +240,55 @@ button { font-family: inherit; cursor: pointer; }
   content: ''; position: absolute; inset: 0; z-index: -1;
   background-size: cover; background-position: center;
 }
-.art--splash { background-image: linear-gradient(180deg, rgba(8,10,16,0.62), rgba(8,10,16,0.92)), url('/art/splash.jpg'); }
-.art--busted { background-image: linear-gradient(180deg, rgba(20,4,8,0.68), rgba(8,4,8,0.94)), url('/art/busted.jpg'); }
-.art--winner { background-image: linear-gradient(180deg, rgba(10,8,4,0.6), rgba(8,8,12,0.92)), url('/art/winner.jpg'); }
-.art--wasted { background-image: linear-gradient(180deg, rgba(14,6,6,0.7), rgba(6,6,10,0.94)), url('/art/wasted.jpg'); }
+/* Layer order is scrim, then the painted art if the file exists, then a
+   canyon-at-dusk fallback underneath. Drop a file into public/art and it
+   slots in between the two without touching anything else. */
+.art--splash {
+  background-size: cover, cover, 100% 100%, cover;
+  background-position: center, center top, center, center;
+  background-repeat: no-repeat;
+  background-image:
+    linear-gradient(180deg, rgba(10,7,18,0.30) 0%, rgba(10,7,18,0.06) 26%, rgba(9,6,16,0.55) 54%, rgba(7,5,13,0.88) 76%, rgba(6,4,11,0.96) 100%),
+    url('/art/splash.jpg'),
+    url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%201600%20900'%20preserveAspectRatio='none'>%20<g%20fill='%235e2f38'>%20<path%20d='M330%20900V612l60-22%2032-74%2080%2022%2036%2082%2064%2036%2026%2092v152z'/>%20<path%20d='M1280%20900V584l-66-26-28-80-88%2024-30%2088-74%2042-22%20100v168z'/>%20</g>%20<g%20fill='%238a4330'>%20<path%20d='M0%20900V400l84-32%2040-108%20100-26%2032-96%20112%2022%2046%20108%2086%2046%2036%20138%2070%2070v278z'/>%20<path%20d='M1600%20900V360l-96-36-34-116-112-22-40-102-120%2030-42%20122-98%2050-28%20148-84%2076v290z'/>%20</g>%20<g%20fill='%23a85a38'>%20<path%20d='M0%20900V620l70-26%2044-70%2078%2030%2040%2076%2066%2040%2030%20104v126z'/>%20<path%20d='M1600%20900V596l-76-28-46-74-82%2032-42%2080-70%2044-28%20110v140z'/>%20</g>%20<path%20d='M700%20900%20784%20690h32l84%20210z'%20fill='%234a3138'/>%20<path%20d='M764%20900%20788%20690h6l24%20210z'%20fill='%23c9a86a'%20opacity='0.5'/>%20</svg>"),
+    linear-gradient(180deg,
+      #140f2c 0%, #2a1743 24%, #5c2450 44%, #9c3a45 58%,
+      #d9662c 70%, #f0a03a 80%, #6d4a35 88%, #2b1c22 100%);
+}
+/* Paintings letter their title across the top, so anchor them there: a wide
+   window crops the bottom rather than the words. The scrim is weighted low to
+   match, keeping the lettering clear and the buttons readable. */
+.art--busted, .art--wasted, .art--winner {
+  background-position: center, center top, center;
+}
+.art--busted {
+  background-image:
+    linear-gradient(180deg, rgba(18,4,10,0.30) 0%, rgba(12,4,12,0.20) 34%, rgba(9,4,12,0.72) 72%, rgba(6,3,10,0.94) 100%),
+    url('/art/busted.jpg'),
+    linear-gradient(180deg, #170f2e 0%, #3d1540 42%, #8a2230 74%, #23121c 100%);
+}
+.art--winner {
+  background-image:
+    linear-gradient(180deg, rgba(14,9,6,0.30) 0%, rgba(10,7,14,0.20) 34%, rgba(9,6,13,0.72) 72%, rgba(6,4,11,0.94) 100%),
+    url('/art/winner.jpg'),
+    linear-gradient(180deg, #171030 0%, #4a2148 38%, #c0632a 68%, #f0ae4a 82%, #2a1d20 100%);
+}
+.art--wasted {
+  background-image:
+    linear-gradient(180deg, rgba(12,5,8,0.32) 0%, rgba(8,5,12,0.20) 34%, rgba(7,4,11,0.74) 72%, rgba(5,4,10,0.95) 100%),
+    url('/art/wasted.jpg'),
+    linear-gradient(180deg, #120d24 0%, #331636 44%, #6a2430 76%, #1c1118 100%);
+}
+
+/* When the painting is there it carries the lettering, so the HTML heading
+   stands down and the controls drop clear of the art. The gradient fallback
+   keeps the heading, which is the only title it has. */
+.screen.has-art .logo,
+.screen.has-art .tagline,
+.screen.has-art .verdict__stamp { display: none; }
+.screen--splash.has-art { align-items: flex-end; }
+.screen--splash.has-art .splash { padding-bottom: 2vh; }
+.screen.has-art .verdict { margin-top: auto; }
 
 /* --- loading --- */
 .loader { text-align: center; }
@@ -258,17 +303,66 @@ button { font-family: inherit; cursor: pointer; }
 
 /* --- splash --- */
 .splash { width: min(560px, 100%); text-align: center; }
+/* Stamped-steel wordmark: two riveted plates with a sprocket bolted between
+   them. The type is a metal gradient clipped to the glyphs, so it catches a
+   highlight along the top and bottom the way a pressed plate would. */
 .logo {
   font-family: var(--display); margin: 0;
-  font-size: clamp(50px, 13vw, 122px); line-height: 0.84; letter-spacing: -0.045em;
+  display: flex; align-items: center; justify-content: center; gap: 0;
+  font-size: clamp(30px, 8.2vw, 74px); line-height: 1;
   text-transform: uppercase;
+  filter: drop-shadow(0 14px 26px rgba(0, 0, 0, 0.7));
 }
-.logo__moto { color: var(--ink); text-shadow: 0 6px 0 rgba(0,0,0,0.5); }
-.logo__rush {
-  color: var(--hot);
-  text-shadow: 0 6px 0 rgba(0,0,0,0.5), 0 0 60px rgba(255,90,31,0.65);
+.logo__plate {
+  position: relative;
+  padding: 0.16em 0.3em 0.2em;
 }
-.tagline { margin: 10px 0 26px; font-size: clamp(10px, 2.2vw, 13px); letter-spacing: 0.34em; color: var(--muted); }
+/* Extra room on the inner edges so the sprocket lands on bare plate rather
+   than on top of the O and the R. */
+.logo__plate { flex: 0 0 auto; white-space: nowrap; }
+.logo__plate:first-of-type { padding-right: 0.9em; }
+.logo__plate:last-of-type { padding-left: 0.82em; }
+.logo__plate {
+  background:
+    linear-gradient(180deg, #99a1ad 0%, #5a626e 44%, #343b45 52%, #4e5661 68%, #7d8693 100%);
+  border: 2px solid #1c2027;
+  border-radius: 10px;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -4px 8px rgba(0, 0, 0, 0.55),
+    0 6px 0 #14171c;
+}
+/* Rivets, two per pseudo-element so four corners cost no extra markup. */
+.logo__plate::before,
+.logo__plate::after {
+  content: ''; position: absolute; left: 0.22em; right: 0.22em; height: 6px;
+  background-image:
+    radial-gradient(circle, #e8ecf2 0 28%, #6d7683 45%, #24282f 60%, transparent 66%),
+    radial-gradient(circle, #e8ecf2 0 28%, #6d7683 45%, #24282f 60%, transparent 66%);
+  background-size: 9px 9px; background-repeat: no-repeat;
+  background-position: left center, right center;
+}
+.logo__plate::before { top: 0.16em; }
+.logo__plate::after { bottom: 0.16em; }
+.logo__word {
+  background: linear-gradient(180deg,
+    #ffffff 0%, #dfe5ee 20%, #98a1af 46%, #5d6673 51%, #aab3c0 72%, #f4f7fb 100%);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+  -webkit-text-stroke: 1.5px #1b1f26;
+  letter-spacing: 0.01em;
+  /* A warm bounce off the canyon, so the steel is not lit by nothing. */
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.55)) drop-shadow(0 0 18px rgba(255, 138, 48, 0.22));
+}
+.logo__emblem { display: block; flex: 0 0 auto; width: 2.5em; margin: 0 -0.72em; position: relative; z-index: 2; }
+.logo__emblem svg { width: 100%; height: auto; display: block;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.7)); }
+
+.tagline {
+  margin: 16px 0 26px; font-size: clamp(10px, 2.2vw, 13px);
+  letter-spacing: 0.34em; color: #d8b48a;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8);
+}
 
 .menu { display: flex; flex-direction: column; gap: 14px; align-items: stretch; }
 .field { display: flex; flex-direction: column; gap: 6px; text-align: left; }
