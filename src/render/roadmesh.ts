@@ -22,10 +22,43 @@ export interface Band {
   /** Constant offset, or one that varies along the track (the median does). */
   lateral: number | ((s: number) => number);
   u: number;
+  /**
+   * Height for this band alone, added on top of the ribbon's `elevate`. Lets a
+   * strip carry its own kerb: two bands at the same lateral, different heights.
+   */
+  lift?: number | ((s: number) => number);
 }
 
 const bandAt = (band: Band, s: number): number =>
   typeof band.lateral === 'function' ? band.lateral(s) : band.lateral;
+
+const liftAt = (band: Band, s: number): number =>
+  band.lift === undefined ? 0 : typeof band.lift === 'function' ? band.lift(s) : band.lift;
+
+/**
+ * Close the open edge of a raised ribbon with a kerb face: a copy of the
+ * outermost band dropped below the surface it sits on.
+ *
+ * A raised slab with no riser is a slab floating in mid-air. At the grazing
+ * angles you ride at, a view ray crossing the edge just below the top slips
+ * underneath it, misses every surface in the scene and renders the sky dome -
+ * so the kerb reads as a bright hairline of sky running its whole length.
+ *
+ * The full-height duplicate beside each face is what keeps the top flat: the
+ * zero-area quad between the twins contributes nothing to `computeVertexNormals`,
+ * so the riser stays vertical instead of averaging into the surface.
+ */
+export function withKerbFaces(bands: Band[], drop: number | ((s: number) => number)): Band[] {
+  const first = bands[0];
+  const last = bands[bands.length - 1];
+  return [
+    { ...first, lift: drop },
+    { ...first },
+    ...bands.slice(1, -1),
+    { ...last },
+    { ...last, lift: drop },
+  ];
+}
 
 export type ElevateFn = (s: number, lateral: number) => number;
 
@@ -57,7 +90,7 @@ export function ribbonGeometry(
       track.toWorld(s, lateral, p);
       const i = (r * cols + c) * 3;
       positions[i] = p.x;
-      positions[i + 1] = p.y + (elevate ? elevate(s, lateral) : 0);
+      positions[i + 1] = p.y + (elevate ? elevate(s, lateral) : 0) + liftAt(band, s);
       positions[i + 2] = p.z;
       const j = (r * cols + c) * 2;
       uvs[j] = band.u;
@@ -321,19 +354,23 @@ export function buildRoad(
     applyPbr(medianMat, textures.grass, { normalScale: 0.9, roughness: 1 });
     // Several columns across, so a wide island is not two long thin triangles.
     const columns = 6;
-    const bands: Band[] = Array.from({ length: columns + 1 }, (_, i) => {
+    const top: Band[] = Array.from({ length: columns + 1 }, (_, i) => {
       const f = (i / columns) * 2 - 1; // -1 .. 1
       return {
         lateral: (s: number) => f * track.medianAt(s),
         u: (f + 1) / 2,
       };
     });
+    // Slightly proud of the tarmac, like a raised grass median.
+    const raised = (s: number) => track.medianAt(s) > 0.05;
+    const MEDIAN_KERB = 0.06;
     const geo = ribbonGeometry(
       track,
-      bands,
+      // Drop the kerb faces below the tarmac so their bottom edge is buried
+      // rather than z-fighting the asphalt they meet.
+      withKerbFaces(top, (s) => (raised(s) ? -(MEDIAN_KERB + 0.02) : 0)),
       6,
-      // Slightly proud of the tarmac, like a raised grass median.
-      (s) => (track.medianAt(s) > 0.05 ? 0.06 : -0.02),
+      (s) => (raised(s) ? MEDIAN_KERB : -0.02),
       SPLIT_STEP,
     );
     const median = new THREE.Mesh(geo, medianMat);
@@ -426,7 +463,9 @@ export function buildPavements(
       const bands: Band[] = sign < 0
         ? [{ lateral: outer, u: 1 }, { lateral: inner, u: 0 }]
         : [{ lateral: inner, u: 0 }, { lateral: outer, u: 1 }];
-      const geo = ribbonGeometry(track, bands, WIDTH, () => KERB, 2, from, to);
+      const geo = ribbonGeometry(
+        track, withKerbFaces(bands, -(KERB + 0.03)), WIDTH, () => KERB, 2, from, to,
+      );
       const mesh = new THREE.Mesh(geo, material);
       mesh.receiveShadow = true;
       mesh.name = 'pavement';
