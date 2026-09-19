@@ -891,7 +891,17 @@ export class GameView {
     const height = CAM.height + down * 1.5;
     this.camera.position.set(behind.x, behind.y + height, behind.z);
 
-    const ahead = track.toWorld(p.s + CAM.lookAhead, p.lateral * 0.55, this.tmpSample);
+    // Bias the look-at toward the middle of the road so the camera settles
+    // rather than tracking every twitch. On a divided stretch the middle of
+    // the ROAD is the island, though - biasing toward that swings the camera
+    // off the carriageway and leaves the rider at the edge of frame. Aim at
+    // the middle of the carriageway they are actually on.
+    const lookMedian = track.medianAt(p.s + CAM.lookAhead);
+    const lookCentre = lookMedian > 0
+      ? Math.sign(p.lateral || 1) * (lookMedian + track.halfWidth * 0.5)
+      : 0;
+    const lookLateral = lookCentre + (p.lateral - lookCentre) * 0.55;
+    const ahead = track.toWorld(p.s + CAM.lookAhead, lookLateral, this.tmpSample);
     this.tmpVec2.set(ahead.x, ahead.y + CAM.lookHeight, ahead.z);
 
     const shakeOffset = this.shake.offset(this.tmpVec);
