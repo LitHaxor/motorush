@@ -13,3 +13,4 @@ blob-report/
 # Firebase emulator artefacts
 *-debug.log
 .firebase/
+.vercel

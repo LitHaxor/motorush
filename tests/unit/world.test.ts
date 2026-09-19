@@ -701,3 +701,20 @@ describe('World: telling riders apart', () => {
     expect(w.localRacer).toBe(w.player);
   });
 });
+
+describe('World: nobody shares a name', () => {
+  it('gives every rider on the grid a distinct name', () => {
+    // The grid is drawn with names now, and two riders called the same thing
+    // is as unreadable as two in the same colour.
+    for (const seed of [1, 9, 77]) {
+      const w = new World({ seed, riderName: 'ACE' });
+      const names = w.racers.map((r) => r.name);
+      expect(new Set(names).size, `seed ${seed}`).toBe(names.length);
+    }
+  });
+
+  it('puts the local rider name on racer zero when playing offline', () => {
+    // Offline there is no seating, so racer 0 is you.
+    expect(new World({ seed: 2, riderName: 'ACE' }).player.name).toBe('ACE');
+  });
+});

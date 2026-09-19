@@ -13,6 +13,7 @@ import { isRiding } from './sim/racer';
 import { type NetSession, connect, readConfig } from './net/session';
 import { type JoinMode, type OnlineRace, goOnline } from './net/online';
 import { GRID_SLOTS } from './net/lobby';
+import { RIVALS } from './sim/config';
 import { applyCars, applyPeds, applyRacers } from './net/snapshot';
 import type { DifficultyKey, RacerInput, SimEvent } from './sim/types';
 
@@ -231,9 +232,26 @@ class Game {
   private applySeatNames(): void {
     const online = this.online;
     if (!online) return;
-    for (const seat of online.seats()) {
-      const racer = this.world.racers[seat.slot];
-      if (racer) racer.name = seat.name;
+
+    const taken = new Map(online.seats().map((s) => [s.slot, s.name]));
+    const humans = new Set(taken.values());
+    // Names no human is using, for the seats that are still bots.
+    const spare = RIVALS.names.filter((n) => !humans.has(n));
+    let nextSpare = 0;
+
+    for (const racer of this.world.racers) {
+      const seated = taken.get(racer.id);
+      if (seated !== undefined) {
+        racer.name = seated;
+        continue;
+      }
+      // World names racer 0 after whoever is playing, but riders fill the
+      // grid from the back - so on every screen racer 0 was a bot wearing its
+      // own player's name, and the grid showed two of them.
+      if (humans.has(racer.name)) {
+        racer.name = spare[nextSpare % spare.length] ?? racer.name;
+        nextSpare++;
+      }
     }
   }
 
