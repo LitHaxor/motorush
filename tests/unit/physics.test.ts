@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Track } from '../../src/sim/track';
+import { buildBiomes, buildRoadLayout } from '../../src/sim/biomes';
+import { makeRng } from '../../src/sim/mathx';
 import { createRacer, speedCap, knockDown } from '../../src/sim/racer';
 import { stepRacer, corneringDrift, steerAuthority, NEUTRAL_INPUT } from '../../src/sim/physics';
 import { BIKE, CRASH, HEALTH, TRACK } from '../../src/sim/config';
@@ -339,5 +341,95 @@ describe('physics: hitting the barrier', () => {
     const over = createRacer({ id: 2, speed: CRASH.barrierCrashSpeed + 5, lateral: edge - 0.05 });
     run(over, input({ throttle: 0, steer: 1 }), 0.3);
     expect(over.state).toBe('down');
+  });
+});
+
+describe('physics: a split opening underneath you', () => {
+  /** A track with a fork, laid out the way the World does it. */
+  const forkTrack = () => {
+    for (let seed = 1; seed < 80; seed++) {
+      const rng = makeRng(seed);
+      const biomes = buildBiomes(12000, rng);
+      const divided = buildRoadLayout(12000, rng, biomes, {
+        medianHalfWidth: TRACK.medianHalfWidth,
+        forkHalfWidth: TRACK.forkHalfWidth,
+        forkChance: TRACK.forkChance,
+        medianLength: TRACK.medianLength,
+        forkLength: TRACK.forkLength,
+        gap: TRACK.medianGap,
+        cityMargin: TRACK.splitBiomeMargin,
+      });
+      const fork = divided.find((d) => d.fork);
+      if (fork) return { track: new Track({ seed, length: 12000, biomes, divided }), fork };
+    }
+    throw new Error('no fork generated');
+  };
+
+  it('carries a rider out with their lane as the median opens', () => {
+    const { track: tk, fork } = forkTrack();
+    const r = createRacer({ id: 1, speed: 55, lateral: 4.5 });
+    // Start well before the split and ride straight through the ramp.
+    r.s = fork.from - TRACK.medianRamp - 60;
+    for (let i = 0; i < 60 * 12; i++) {
+      stepRacer(r, tk, { ...NEUTRAL_INPUT, throttle: 1 }, 1 / 60);
+      if (r.s > fork.from + 60) break;
+    }
+    // Still on tarmac, on the same side, rather than stranded on the island.
+    expect(r.state).toBe('ride');
+    expect(tk.isOffRoad(r.lateral, r.s)).toBe(false);
+    expect(r.lateral).toBeGreaterThan(tk.medianAt(r.s));
+  });
+
+  it('does not shove anyone sideways where the road is undivided', () => {
+    const { track: tk } = forkTrack();
+    const r = createRacer({ id: 1, speed: 50, lateral: 3 });
+    r.s = 50;
+    const before = r.lateral;
+    for (let i = 0; i < 60; i++) {
+      stepRacer(r, tk, { ...NEUTRAL_INPUT, throttle: 1 }, 1 / 60);
+    }
+    // Only cornering drift should have moved them, and barely on the straight.
+    expect(Math.abs(r.lateral - before)).toBeLessThan(0.5);
+  });
+
+  it('keeps a rider on the left carriageway on the left', () => {
+    const { track: tk, fork } = forkTrack();
+    const r = createRacer({ id: 1, speed: 55, lateral: -4.5 });
+    r.s = fork.from - TRACK.medianRamp - 60;
+    for (let i = 0; i < 60 * 12; i++) {
+      stepRacer(r, tk, { ...NEUTRAL_INPUT, throttle: 1 }, 1 / 60);
+      if (r.s > fork.from + 60) break;
+    }
+    expect(r.lateral).toBeLessThan(-tk.medianAt(r.s));
+    expect(tk.isOffRoad(r.lateral, r.s)).toBe(false);
+  });
+});
+
+describe('physics: getting going again', () => {
+  const edge = TRACK.halfWidth + TRACK.shoulder;
+
+  it('lets a rider pinned against the barrier pull away', () => {
+    // Stopped, hard against the rail, throttle pinned. This used to leave the
+    // bike revving on the spot: the out-of-bounds branch returned before the
+    // odometry ran, so speed climbed but distance never did.
+    const r = createRacer({ id: 1, speed: 0, lateral: edge + 0.5, s: 400 });
+    const startS = r.s;
+    run(r, input({ throttle: 1 }), 3);
+    expect(r.state).toBe('ride');
+    expect(r.s).toBeGreaterThan(startS + 10);
+    expect(r.speed).toBeGreaterThan(5);
+  });
+
+  it('pulls away from a standstill out on the verge', () => {
+    const r = createRacer({ id: 1, speed: 0, lateral: TRACK.halfWidth + 2, s: 400 });
+    const startS = r.s;
+    run(r, input({ throttle: 1 }), 3);
+    expect(r.s).toBeGreaterThan(startS + 15);
+  });
+
+  it('nudges a barrier-scraping rider back toward the road', () => {
+    const r = createRacer({ id: 1, speed: 4, lateral: edge + 0.4, s: 400 });
+    run(r, input({ throttle: 1 }), 2);
+    expect(Math.abs(r.lateral)).toBeLessThan(edge + 0.1);
   });
 });

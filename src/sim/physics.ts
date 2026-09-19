@@ -196,6 +196,13 @@ export function stepRacer(
   if (r.speed > r.bestSpeed) r.bestSpeed = r.speed;
 
   // --- lateral ---------------------------------------------------------
+  // A median opening ahead pushes the carriageways apart. Carry the rider out
+  // with their lane, or the island simply appears underneath someone who never
+  // moved - they lose grip and start throwing up dust in the middle of what,
+  // a moment ago, was their lane.
+  const spread = track.medianAt(r.s + r.speed * dt) - track.medianAt(r.s);
+  if (spread !== 0) r.lateral += Math.sign(r.lateral || 1) * spread;
+
   const curvature = track.curvatureAt(r.s);
   let dx = steer * BIKE.steerSpeed * steerAuthority(r.speed) * dt;
   dx += corneringDrift(curvature, r.speed) * dt;
@@ -223,15 +230,21 @@ export function stepRacer(
     // Slow enough to just scrape along it: lose speed, get nudged back onto
     // the road, stay on two wheels. Rate-limited, or grinding along a rail
     // re-damages you sixty times a second and kills you at walking pace.
+    //
+    // Deliberately does NOT return: falling through to the odometry below is
+    // what lets a rider pinned against the barrier pull away again. Returning
+    // here left them accelerating on the spot, unable to get going at all.
     r.staggerPush = -into * 2.2;
     if (r.scrapeCooldown <= 0) {
       r.scrapeCooldown = CRASH.scrapeInterval;
       r.speed *= 0.72;
       const fatal = damageRacer(r, HEALTH.scrapeDamage * 0.3);
       events.push({ type: 'scrape', racer: r, car: BARRIER, fatal });
-      if (fatal) knockDown(r, 0.5);
+      if (fatal) {
+        knockDown(r, 0.5);
+        return events;
+      }
     }
-    return events;
   }
 
   // --- pose + odometry --------------------------------------------------

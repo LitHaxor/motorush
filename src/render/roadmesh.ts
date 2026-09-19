@@ -579,27 +579,38 @@ export function buildPaddies(
   };
 }
 
-/** Checkered band painted across the road. */
-function checkerStrip(track: Track, s: number, length = 3, squaresAcross = 14): THREE.Mesh {
+/**
+ * Checkered band painted across the road. Split around the median, so on a
+ * divided stretch it paints both carriageways and not the island between them.
+ */
+function checkerStrips(track: Track, s: number, length = 3, squaresAcross = 14): THREE.Mesh[] {
   const tex = makeCheckerTexture({ squares: 2 });
-  // One texture tile is a 2x2 check, so half as many tiles as squares wanted.
   const rows = Math.max(1, Math.round((length / (track.halfWidth * 2)) * squaresAcross));
   tex.repeat.set(squaresAcross / 2, rows / 2);
-  const geo = ribbonGeometry(
-    track,
-    [{ lateral: -track.halfWidth, u: 0 }, { lateral: track.halfWidth, u: 1 }],
-    length,
-    (_s, _lateral) => 0.012, // float just above the asphalt to beat z-fighting
-    length / 2,
-    s,
-    s + length,
-  );
   // Unlit: painted checks should read as black and white, not wash out under
   // a midday sun.
   const mat = new THREE.MeshBasicMaterial({ map: tex });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.name = `checker-${s}`;
-  return mesh;
+
+  const meshes: THREE.Mesh[] = [];
+  for (const sign of [-1, 1]) {
+    const inner: Band = { lateral: (x: number) => sign * track.medianAt(x), u: sign < 0 ? 1 : 0 };
+    const outer: Band = { lateral: (x: number) => sign * track.edgeAt(x), u: sign < 0 ? 0 : 1 };
+    const geo = ribbonGeometry(
+      track,
+      sign < 0 ? [outer, inner] : [inner, outer],
+      length / 2,
+      // Float just above the asphalt to beat z-fighting.
+      () => 0.012,
+      Math.min(1, length / 4),
+      s,
+      s + length,
+    );
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = `checker-${s}`;
+    mesh.renderOrder = 2;
+    meshes.push(mesh);
+  }
+  return meshes;
 }
 
 /**
@@ -609,7 +620,7 @@ function checkerStrip(track: Track, s: number, length = 3, squaresAcross = 14): 
 export function buildStartLine(track: Track): THREE.Group {
   const group = new THREE.Group();
   group.name = 'startline';
-  group.add(checkerStrip(track, 0, 8));
+  group.add(...checkerStrips(track, 0, 8));
 
   const coneTex = makeCheckerTexture({ squares: 4 });
   const coneMat = new THREE.MeshStandardMaterial({ map: coneTex, roughness: 0.7 });
@@ -635,15 +646,18 @@ export function buildStartLine(track: Track): THREE.Group {
 export function buildFinishLine(track: Track, s: number): THREE.Group {
   const group = new THREE.Group();
   group.name = 'finish';
-  group.add(checkerStrip(track, s, 4));
+  group.add(...checkerStrips(track, s, 4));
 
   const p = track.toWorld(s, 0);
   const heading = p.heading;
   const postMat = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.6, metalness: 0.4 });
   const postGeo = new THREE.BoxGeometry(0.7, 9, 0.7);
 
+  // Posts stand outside the tarmac at THIS point, which on a divided stretch
+  // is a good deal wider than the nominal half width.
+  const span = track.edgeAt(s) + 1.4;
   for (const sign of [-1, 1]) {
-    const at = track.toWorld(s, sign * (track.halfWidth + 1.4));
+    const at = track.toWorld(s, sign * span);
     const post = new THREE.Mesh(postGeo, postMat);
     post.position.set(at.x, at.y + 4.5, at.z);
     post.rotation.y = heading;
@@ -651,8 +665,8 @@ export function buildFinishLine(track: Track, s: number): THREE.Group {
     group.add(post);
   }
 
-  // Banner across the top.
-  const bannerW = (track.halfWidth + 1.4) * 2;
+  // Banner across the top, spanning both carriageways.
+  const bannerW = span * 2;
   const bannerGeo = new THREE.BoxGeometry(bannerW, 2.4, 0.35);
   const bannerMat = new THREE.MeshStandardMaterial({
     color: 0xff4d1c,
