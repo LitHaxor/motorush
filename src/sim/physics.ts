@@ -2,7 +2,7 @@
 // target exponentially, steering is a direct lateral rate scaled by speed, and
 // corners push you toward the outside quadratically.
 
-import { BIKE, CRASH, HEALTH, TRACK } from './config';
+import { HOP, BIKE, CRASH, HEALTH, TRACK } from './config';
 import type { Car } from './types';
 import { clamp, damp } from './mathx';
 import { isRiding, knockDown, remount, damageRacer, speedCap } from './racer';
@@ -202,6 +202,18 @@ export function stepRacer(
   // a moment ago, was their lane.
   const spread = track.medianAt(r.s + r.speed * dt) - track.medianAt(r.s);
   if (spread !== 0) r.lateral += Math.sign(r.lateral || 1) * spread;
+
+  // The hop from clipping somebody: straight up, then gravity takes it back.
+  // Purely vertical - it does not steer the bike, it just makes the moment
+  // read as running a person over rather than driving through a ghost.
+  if (r.hop > 0 || r.hopVel > 0) {
+    r.hopVel -= HOP.gravity * dt;
+    r.hop += r.hopVel * dt;
+    if (r.hop <= 0) {
+      r.hop = 0;
+      r.hopVel = 0;
+    }
+  }
 
   const curvature = track.curvatureAt(r.s);
   let dx = steer * BIKE.steerSpeed * steerAuthority(r.speed) * dt;

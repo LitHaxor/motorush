@@ -2,7 +2,7 @@
 // as ribbons that follow the centreline so they hug every crest and corner.
 
 import * as THREE from 'three';
-import { TRACK } from '../sim/config';
+import { CITY, TRACK } from '../sim/config';
 import type { Track } from '../sim/track';
 import type { SkyPreset } from './palette';
 import {
@@ -364,20 +364,75 @@ export function buildRoad(
     // Slightly proud of the tarmac, like a raised grass median.
     const raised = (s: number) => track.medianAt(s) > 0.05;
     const MEDIAN_KERB = 0.06;
-    const geo = ribbonGeometry(
-      track,
+    // City stretches get a paved island instead (below). Build the grass one
+    // only where it belongs rather than laying concrete over the top of it:
+    // overlapping them left the grass kerb face showing as a thin green line
+    // down the middle of every high street.
+    const paved = biomes
+      .filter((b) => b.kind === 'city')
+      .map((b) => ({
+        from: Math.max(-START_RUNUP, b.from - 20),
+        to: Math.min(track.length, b.to + 20),
+      }))
+      .sort((a, b) => a.from - b.from);
+
+    const grassRanges: Array<{ from: number; to: number }> = [];
+    let cursor = -START_RUNUP;
+    for (const r of paved) {
+      if (r.from > cursor) grassRanges.push({ from: cursor, to: r.from });
+      cursor = Math.max(cursor, r.to);
+    }
+    if (cursor < track.length) grassRanges.push({ from: cursor, to: track.length });
+
+    const medianBands = withKerbFaces(top, (s) => (raised(s) ? -(MEDIAN_KERB + 0.02) : 0));
+    const medianHeight = (s: number) => (raised(s) ? MEDIAN_KERB : -0.02);
+
+    for (const range of grassRanges) {
+      if (range.to - range.from < 1) continue;
       // Drop the kerb faces below the tarmac so their bottom edge is buried
       // rather than z-fighting the asphalt they meet.
-      withKerbFaces(top, (s) => (raised(s) ? -(MEDIAN_KERB + 0.02) : 0)),
-      6,
-      (s) => (raised(s) ? MEDIAN_KERB : -0.02),
-      SPLIT_STEP,
-    );
-    const median = new THREE.Mesh(geo, medianMat);
-    median.receiveShadow = true;
-    median.name = 'median';
-    group.add(median);
-    disposables.push(geo, medianMat);
+      const geo = ribbonGeometry(
+        track, medianBands, 6, medianHeight, SPLIT_STEP, range.from, range.to,
+      );
+      const median = new THREE.Mesh(geo, medianMat);
+      median.receiveShadow = true;
+      median.name = 'median';
+      group.add(median);
+      disposables.push(geo);
+    }
+
+    // A grass central reservation is right on a country road and wrong down a
+    // high street - it reads as a park someone paved two carriageways through.
+    // These stretches are the exact complement of the grass ones above, so the
+    // two meet end to end instead of overlapping.
+    const cityMedian = biomes.filter((b) => b.kind === 'city');
+    if (cityMedian.length) {
+      const cityTex = makePavementTexture();
+      cityTex.repeat.set(1, 1);
+      const cityMat = new THREE.MeshStandardMaterial({
+        map: cityTex, roughness: 0.92, metalness: 0.02,
+      });
+      for (const seg of cityMedian) {
+        const from = Math.max(0, seg.from - 20);
+        const to = Math.min(track.length, seg.to + 20);
+        const cityGeo = ribbonGeometry(
+          track,
+          withKerbFaces(top, (s) => (raised(s) ? -(MEDIAN_KERB + 0.02) : 0)),
+          6,
+          (s) => (raised(s) ? MEDIAN_KERB : -0.02),
+          SPLIT_STEP,
+          from,
+          to,
+        );
+        const paved = new THREE.Mesh(cityGeo, cityMat);
+        paved.receiveShadow = true;
+        paved.name = 'median-city';
+        group.add(paved);
+        disposables.push(cityGeo);
+      }
+      disposables.push(cityMat, cityTex);
+    }
+    disposables.push(medianMat);
   }
 
   // --- guardrails ----------------------------------------------------------
@@ -450,8 +505,27 @@ export function buildPavements(
   tex.repeat.set(1, 1);
   const material = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.92, metalness: 0.02 });
   const geos: THREE.BufferGeometry[] = [];
-  const WIDTH = 5.5;
+  // Out to the building line, so no grass shows between the two.
+  const WIDTH = CITY.pavementWidth - 0.05;
   const KERB = 0.16;
+
+  /**
+   * Where a city street is also a divided one.
+   *
+   * These stretches get a second pair of pavements facing the island, so each
+   * carriageway reads as a street in its own right rather than one road with a
+   * lawn up the middle.
+   */
+  const islands: Array<{ from: number; to: number }> = [];
+  for (const seg of cities) {
+    for (const d of track.divided) {
+      const from = Math.max(seg.from, d.from);
+      const to = Math.min(seg.to, d.to);
+      if (to - from > 40 && track.medianAt((from + to) / 2) >= CITY.islandMinHalfWidth) {
+        islands.push({ from, to });
+      }
+    }
+  }
 
   for (const seg of cities) {
     const from = Math.max(0, seg.from - 20);
@@ -459,7 +533,7 @@ export function buildPavements(
     for (const sign of [-1, 1]) {
       // Starts at the kerb, where the gravel shoulder would otherwise be.
       const inner = (s: number) => sign * (track.edgeAt(s) + 0.05);
-      const outer = (s: number) => sign * (track.edgeAt(s) + 0.05 + WIDTH);
+      const outer = (s: number) => sign * (track.edgeAt(s) + CITY.pavementWidth);
       const bands: Band[] = sign < 0
         ? [{ lateral: outer, u: 1 }, { lateral: inner, u: 0 }]
         : [{ lateral: inner, u: 0 }, { lateral: outer, u: 1 }];
@@ -469,6 +543,33 @@ export function buildPavements(
       const mesh = new THREE.Mesh(geo, material);
       mesh.receiveShadow = true;
       mesh.name = 'pavement';
+      group.add(mesh);
+      geos.push(geo);
+    }
+  }
+
+  // Kerb and pavement along the island, facing each carriageway.
+  for (const seg of islands) {
+    for (const sign of [-1, 1]) {
+      const outer = (s: number) => sign * track.medianAt(s);
+      const inner = (s: number) => sign * Math.max(0, track.medianAt(s) - CITY.islandPavement);
+      // Band order flips with the side so the winding stays consistent and
+      // neither pavement ends up facing away from the camera.
+      const bands: Band[] = sign < 0
+        ? [{ lateral: inner, u: 1 }, { lateral: outer, u: 0 }]
+        : [{ lateral: outer, u: 0 }, { lateral: inner, u: 1 }];
+      const geo = ribbonGeometry(
+        track,
+        withKerbFaces(bands, -(KERB + 0.03)),
+        CITY.islandPavement,
+        () => KERB,
+        2,
+        seg.from,
+        seg.to,
+      );
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.receiveShadow = true;
+      mesh.name = 'pavement-island';
       group.add(mesh);
       geos.push(geo);
     }

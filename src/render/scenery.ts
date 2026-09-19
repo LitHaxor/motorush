@@ -4,6 +4,7 @@
 
 import * as THREE from 'three';
 import type { Track } from '../sim/track';
+import { CITY } from '../sim/config';
 import type { Rng, PickupKind } from '../sim/types';
 import type { SkyPreset } from './palette';
 import { makeTerrainElevation, ribbonGeometry, START_RUNUP } from './roadmesh';
@@ -467,14 +468,18 @@ export function buildScenery(
   const heads = new THREE.InstancedMesh(headGeo, headMat, lampCount);
   for (let i = 0; i < lampCount; i++) {
     const s = 40 + i * lampSpacing;
-    const p = track.toWorld(s, edge + 1.8);
+    // Per-post, not the global `edge`. That constant folds in the widest
+    // median anywhere on the track, so on the undivided majority of the road
+    // every lamp stood nine metres out in a field.
+    const roadEdge = edgeAt(s);
+    const p = track.toWorld(s, roadEdge + 1.8);
     dummy.position.set(p.x, p.y + 4.25, p.z);
     dummy.rotation.set(0, p.heading, 0);
     dummy.scale.setScalar(1);
     dummy.updateMatrix();
     poles.setMatrixAt(i, dummy.matrix);
 
-    const head = track.toWorld(s, edge + 0.6);
+    const head = track.toWorld(s, roadEdge + 0.6);
     dummy.position.set(head.x, p.y + 8.4, head.z);
     dummy.updateMatrix();
     heads.setMatrixAt(i, dummy.matrix);
@@ -532,6 +537,37 @@ export function buildScenery(
     }
   }
 
+  // A city fork's island is a block of its own, not a lawn. The island
+  // planting above deliberately skips town and leaves this to us.
+  for (const seg of track.divided) {
+    let s = seg.from + 10;
+    while (s < seg.to - 10) {
+      const median = track.medianAt(s);
+      // Needs to be a real island, in town, with room for something to stand on.
+      if (median < CITY.islandMinHalfWidth || biomeAt(biomes, s) !== 'city') {
+        s += 12;
+        continue;
+      }
+      const idx = rng.int(0, PROTOTYPES.length - 1);
+      const proto = PROTOTYPES[idx];
+      // Shrink to fit between the island's own pavements, not just between
+      // the carriageways - otherwise the block stands on its own kerb.
+      const room = (median - CITY.islandPavement - 0.4) * 2;
+      const fit = Math.min(rng.range(0.7, 1.0), room / proto.d);
+      if (fit < 0.35) {
+        s += 12;
+        continue;
+      }
+      const width = proto.w * fit;
+      const at = track.toWorld(s + width / 2, 0);
+      bv.set(at.x, at.y + (proto.h * fit) / 2 - 0.4, at.z);
+      bq.setFromAxisAngle(up, at.heading);
+      bs.set(fit, fit, fit);
+      buildingSlots[idx].push(bm.compose(bv, bq, bs).clone());
+      s += width + rng.range(3, 9);
+    }
+  }
+
   for (const seg of biomes) {
     // Buildings belong to the city, not to every biome.
     if (seg.kind !== 'city') continue;
@@ -543,7 +579,10 @@ export function buildScenery(
         const proto = PROTOTYPES[idx];
         const jitter = rng.range(0.85, 1.2);
         const width = proto.w * jitter;
-        const setback = edgeAt(s) + 3.5 + rng.range(0, 3);
+        // Measured from the tarmac edge with the same constant the pavement
+        // uses, so the two always meet instead of leaving a strip of grass.
+        const setback = track.edgeAt(s) + CITY.buildingSetback
+          + rng.range(0, CITY.buildingJitter);
         const at = track.toWorld(s + width / 2, sign * (setback + proto.d / 2));
         bv.set(at.x, at.y + (proto.h * jitter) / 2 - 0.4, at.z);
         bq.setFromAxisAngle(up, at.heading);
@@ -950,7 +989,13 @@ export function buildCrossings(
     geos.push(geo);
 
     for (const sign of [-1, 1]) {
-      const at = track.toWorld(crossing.s, sign * (half + 1.4));
+      // On the pavement, not on the tarmac. At half + 1.4 the post stood at
+      // 10.4m with the barrier out at 13.5, so signals were planted in the
+      // carriageway riders were still using.
+      const at = track.toWorld(
+        crossing.s,
+        sign * (track.edgeAt(crossing.s) + CITY.walkway[0]),
+      );
       const post = new THREE.Mesh(postGeo, postMat);
       post.position.set(at.x, at.y + 1.35, at.z);
       post.rotation.y = at.heading;

@@ -3,8 +3,32 @@
 
 import type { DifficultyKey, RaceResult } from '../sim/types';
 import { formatTime, ordinal, mps2kmh, formatKm } from '../sim/mathx';
+import {
+  generateRiderName,
+  initialRiderName,
+  normaliseRiderName,
+  saveRiderName,
+} from './ridername';
 
-export type ScreenName = 'loading' | 'splash' | 'pause' | 'busted' | 'wasted' | 'finish';
+export type ScreenName =
+  | 'loading' | 'splash' | 'lobby' | 'pause' | 'busted' | 'wasted' | 'finish';
+
+/** One row of the grid on the lobby screen. */
+export interface LobbyRider {
+  slot: number;
+  name: string;
+  isYou: boolean;
+  isHost: boolean;
+}
+
+export interface LobbyView {
+  code: string;
+  riders: LobbyRider[];
+  /** Only the owner gets a start button. */
+  youAreHost: boolean;
+  /** Total seats on the grid; the rest are bots. */
+  gridSize: number;
+}
 
 export interface StartOptions {
   riderName: string;
@@ -13,6 +37,11 @@ export interface StartOptions {
 
 export interface ScreenCallbacks {
   onStart(opts: StartOptions): void;
+  /** Quick Match, a new private room, or a code somebody read out. */
+  onOnline(intent: 'quick' | 'create' | 'join', opts: StartOptions & { code?: string }): void;
+  /** Owner dropped the flag. */
+  onLaunch(): void;
+  onLeaveRoom(): void;
   onResume(): void;
   onRestart(): void;
   onQuit(): void;
@@ -27,6 +56,7 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
 const SCREEN_IDS: Record<ScreenName, string> = {
   loading: 'screen-loading',
   splash: 'screen-splash',
+  lobby: 'screen-lobby',
   pause: 'screen-pause',
   busted: 'screen-busted',
   wasted: 'screen-wasted',
@@ -50,12 +80,18 @@ export class Screens {
 
   constructor(private readonly callbacks: ScreenCallbacks) {
     this.wireSplash();
+    this.wireLobby();
     this.wirePause();
     this.wireVerdicts();
     detectArt();
   }
 
   private wireSplash(): void {
+    // Start on whatever this browser raced under last, or a made-up one, so
+    // the field is never blank and nobody has to invent a handle to play.
+    const nameField = $<HTMLInputElement>('rider-name');
+    nameField.value = initialRiderName();
+
     const choices = $('difficulty-choices');
     choices.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-difficulty]');
@@ -68,10 +104,43 @@ export class Screens {
       }
     });
 
+    /** Whatever is in the name field, tidied and remembered. */
+    const settle = (): StartOptions => {
+      // A cleared field means "you pick"; hand back a real name rather than a
+      // blank, and show them what they are racing as.
+      const typed = normaliseRiderName(nameField.value);
+      const riderName = saveRiderName(typed || generateRiderName());
+      nameField.value = riderName;
+      return { riderName, difficulty: this.difficulty };
+    };
+
     $('btn-start').addEventListener('click', () => {
-      const input = $<HTMLInputElement>('rider-name');
-      const riderName = (input.value || 'YOU').toUpperCase().slice(0, 12);
-      this.callbacks.onStart({ riderName, difficulty: this.difficulty });
+      this.callbacks.onStart(settle());
+    });
+
+    $('btn-quick').addEventListener('click', () => {
+      this.setOnlineNote('');
+      this.callbacks.onOnline('quick', settle());
+    });
+
+    $('btn-create').addEventListener('click', () => {
+      this.setOnlineNote('');
+      this.callbacks.onOnline('create', settle());
+    });
+
+    const codeField = $<HTMLInputElement>('room-code');
+    const join = () => {
+      const code = codeField.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (code.length < 4) {
+        this.setOnlineNote('Room codes are four characters.');
+        return;
+      }
+      this.setOnlineNote('');
+      this.callbacks.onOnline('join', { ...settle(), code });
+    };
+    $('btn-join').addEventListener('click', join);
+    codeField.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') join();
     });
 
     const card = $('controls-card');
@@ -83,6 +152,59 @@ export class Screens {
     $<HTMLInputElement>('rider-name').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') $('btn-start').click();
     });
+  }
+
+  /** Reveal the online buttons. Called once we know we have a session. */
+  enableOnline(): void {
+    $('menu-online').hidden = false;
+  }
+
+  /** A message under the online buttons - a bad code, a room that was full. */
+  setOnlineNote(text: string): void {
+    $('online-note').textContent = text;
+  }
+
+  private wireLobby(): void {
+    $('btn-launch').addEventListener('click', () => this.callbacks.onLaunch());
+    $('btn-leave-room').addEventListener('click', () => this.callbacks.onLeaveRoom());
+  }
+
+  /** Draw the room: its code, who is on the grid, and whose move it is. */
+  showLobby(view: LobbyView): void {
+    $('lobby-code').textContent = view.code || '----';
+    $('lobby-hint').textContent = view.youAreHost
+      ? 'Read the code out to a friend, then start when you are ready.'
+      : 'Waiting for the room owner to start.';
+
+    const rows = [];
+    for (let slot = 0; slot < view.gridSize; slot++) {
+      const rider = view.riders.find((r) => r.slot === slot);
+      const li = document.createElement('li');
+      li.className = rider ? (rider.isYou ? 'is-you' : '') : 'is-bot';
+
+      const no = document.createElement('span');
+      no.className = 'seat-no';
+      no.textContent = String(slot + 1);
+
+      const name = document.createElement('span');
+      // An empty seat is not a gap to be filled before racing - it is a bot.
+      name.textContent = rider ? rider.name : 'BOT';
+
+      const tag = document.createElement('span');
+      tag.className = 'seat-tag';
+      tag.textContent = rider?.isHost ? 'OWNER' : rider?.isYou ? 'YOU' : '';
+
+      li.append(no, name, tag);
+      rows.push(li);
+    }
+    $('lobby-grid').replaceChildren(...rows);
+
+    const humans = view.riders.length;
+    $('lobby-status').textContent =
+      humans === 1 ? 'JUST YOU SO FAR' : `${humans} RIDERS IN THE ROOM`;
+
+    $('btn-launch').hidden = !view.youAreHost;
+    this.show('lobby');
   }
 
   private wirePause(): void {

@@ -1,0 +1,81 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "lobbies": {
+      // The whole list is public to signed-in players so matchmaking can find
+      // an open lobby. Note this .read cascades over everything below it.
+      ".read": "auth != null",
+      // Quick Match queries by `open`; joining a custom room queries by
+      // `code`. Without these the server sorts the whole list every time.
+      ".indexOn": ["open", "code"],
+
+      "$lobbyId": {
+        // Create only as yourself; afterwards only the host may edit or remove.
+        ".write": "auth != null && (data.exists() ? data.child('host').val() === auth.uid : newData.child('host').val() === auth.uid)",
+        ".validate": "!newData.exists() || newData.hasChildren(['host', 'seed', 'createdAt', 'open', 'code'])",
+
+        "host":      { ".validate": "newData.isString() && newData.val() === auth.uid" },
+        "seed":      { ".validate": "newData.isNumber()" },
+        "createdAt": { ".validate": "newData.val() === now || newData.val() === data.val()" },
+        // Listed in Quick Match. A custom room is created with this false and
+        // is only ever reachable by its code.
+        "open":      { ".validate": "newData.isBoolean()" },
+        // Four characters from a deliberately unambiguous alphabet, so a code
+        // can be read out loud without arguing about O versus 0. Excludes
+        // I, O, S and 0, 1, 5 - and must stay in step with CODE_ALPHABET in
+        // src/net/lobby.ts, which is what actually generates them.
+        "code":      { ".validate": "newData.isString() && newData.val().matches(/^[A-HJ-NP-RT-Z2-46-9]{4}$/)" },
+        // Set once, by the host, when the flag drops. Never rewound: a rider
+        // who could clear it would restart everyone else's race.
+        "startedAt": { ".validate": "newData.val() === now && !data.exists()" },
+
+        // Fixed grid slots rather than a map keyed by uid. The rules language
+        // has no way to count children - there is no numChildren() - so a
+        // "max 8 riders" cap cannot be expressed by counting. Eight numbered
+        // slots make the cap structural instead: there is no ninth key to
+        // write. The index doubles as the Racer.id it drives (0 is the host's
+        // own rider, 1-7 are the rivals), so a slot IS a seat on the grid.
+        "slots": {
+          "$slot": {
+            // Claim an empty seat, or keep writing your own. Two riders racing
+            // for the same seat are resolved by the server: writes serialise,
+            // so the second one sees it taken and is refused.
+            ".write": "auth != null && (!data.exists() || data.child('uid').val() === auth.uid)",
+            ".validate": "$slot.matches(/^[0-7]$/) && (!newData.exists() || newData.hasChildren(['uid', 'name']))",
+
+            // Note this holds even for the host, whose write permission on the
+            // lobby root cascades down here: .write cascades, .validate does
+            // not, so the host still cannot seat somebody else's uid.
+            "uid":    { ".validate": "newData.val() === auth.uid" },
+            "name":   { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 16" },
+            "$other": { ".validate": false }
+          }
+        },
+
+        "$other": { ".validate": false }
+      }
+    },
+
+    // Signaling lives at the top level, not under /lobbies, because .read
+    // cascades: the lobby-wide read above would otherwise expose every peer's
+    // ICE candidates, and with them their IP address, to anyone signed in.
+    "signals": {
+      "$lobbyId": {
+        "$toUid": {
+          ".read": "auth != null && auth.uid === $toUid",
+          // The recipient owns their inbox and may bin it once the handshake
+          // is spent - those candidates carry IP addresses, and not keeping
+          // them beats keeping them private. This does cascade, so a rider can
+          // also write into their own inbox as if from someone else; all that
+          // achieves is lying to themselves.
+          ".write": "auth != null && auth.uid === $toUid",
+          "$fromUid": {
+            ".write": "auth != null && auth.uid === $fromUid"
+          }
+        }
+      }
+    }
+  }
+}

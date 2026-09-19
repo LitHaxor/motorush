@@ -43,10 +43,23 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
-    command: 'npm run build && npm run preview',
-    url: baseURL,
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: 'npm run build && npm run preview',
+      url: baseURL,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+    {
+      // The multiplayer spec races against this rather than the real project:
+      // opening rooms on production during a test would both pollute it and
+      // fail the moment the network hiccups. A `demo-` project id keeps the
+      // emulator fully offline.
+      command:
+        'npx firebase emulators:start --only database,auth --project demo-motorush',
+      url: 'http://127.0.0.1:9099/',
+      reuseExistingServer: true,
+      timeout: 120_000,
+    },
+  ],
 });

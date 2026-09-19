@@ -6,8 +6,16 @@ import { clamp } from './mathx';
 import type { Racer, RacerKind, WeaponType } from './types';
 import type { Track } from './track';
 
+/**
+ * One per seat on the grid, plus spares.
+ *
+ * There have to be at least as many as there are riders: with seven and eight
+ * bikes the palette wrapped, and two riders in the same colour is exactly the
+ * confusion nobody needs at 250 km/h.
+ */
 export const RIDER_COLORS = [
   0xe23b3b, 0x2f7de1, 0xf2b705, 0x24c07a, 0xb45cf0, 0xff6f2c, 0x19c3d6,
+  0xe8e3d8, 0xd6247e, 0x8fd633,
 ] as const;
 
 export interface RacerOptions {
@@ -72,6 +80,8 @@ export function createRacer({
     wheelAngle: 0,
     bumpCooldown: 0,
     scrapeCooldown: 0,
+    hop: 0,
+    hopVel: 0,
     riderThrow: 0,
     riderThrowTarget: 0,
     riderLateralThrow: 0,

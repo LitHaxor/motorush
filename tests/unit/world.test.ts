@@ -193,8 +193,12 @@ describe('World: outcomes', () => {
 });
 
 describe('World: police', () => {
+  // Sit right on the cap rather than just under it: these tests are about what
+  // happens when heat maxes out, not about how fast it gets there, and leaving
+  // the last half-point to accrue made them silently dependent on the
+  // POLICE.speedHeat tuning value.
   const heatUp = (w: World) => {
-    w.heat = POLICE.heatMax - 0.5;
+    w.heat = POLICE.heatMax;
     w.player.speed = POLICE.speedThreshold + 20;
   };
 
@@ -479,5 +483,221 @@ describe('World: a patrol parks at the crash', () => {
       + CRASH.liftTime
       + CRASH.mountTime;
     expect(POLICE.arrestPatience).toBeGreaterThan(longest);
+  });
+});
+
+describe('World: externally driven racers', () => {
+  const FLAT_OUT = INPUT({ throttle: 1 });
+  const COASTING = INPUT({ throttle: 0, brake: 1 });
+  const drive = (r: { id: number }, input = COASTING) => new Map([[r.id, input]]);
+
+  it('drives a named rival from the supplied input instead of the AI', () => {
+    const w = new World({ seed: 3 });
+    startRace(w);
+    const rival = w.rivals[0];
+    const before = rival.ai!.planTimer;
+    for (let i = 0; i < 60; i++) w.step(DT, FLAT_OUT, drive(rival));
+    // Winding the plan timer down is the only thing aiInput does unconditionally,
+    // so an untouched timer is proof the AI never thought on this rider's behalf.
+    expect(rival.ai!.planTimer).toBe(before);
+  });
+
+  it('still runs the AI for racers nobody is riding', () => {
+    const w = new World({ seed: 3 });
+    startRace(w);
+    const [ridden, bot] = w.rivals;
+    const botBefore = bot.ai!.planTimer;
+    const botStart = bot.s;
+    for (let i = 0; i < 60; i++) w.step(DT, FLAT_OUT, drive(ridden));
+    // Not `toBeLessThan`: the timer rearms to PLAN_INTERVAL when it runs out,
+    // so over a second it can legitimately come back round higher than it
+    // started. Any movement at all means aiInput ran.
+    expect(bot.ai!.planTimer).not.toBe(botBefore);
+    expect(bot.s).toBeGreaterThan(botStart);
+  });
+
+  it('actually applies the supplied input to the bike', () => {
+    // Same seed twice, so the only difference is who is riding rival zero.
+    const botWorld = new World({ seed: 7 });
+    const humanWorld = new World({ seed: 7 });
+    startRace(botWorld);
+    startRace(humanWorld);
+    const asBot = botWorld.rivals[0];
+    const asHuman = humanWorld.rivals[0];
+
+    for (let i = 0; i < 180; i++) {
+      botWorld.step(DT, FLAT_OUT);
+      humanWorld.step(DT, FLAT_OUT, drive(asHuman));
+    }
+
+    // The bot rides flat out; the human sat on the brakes the whole way.
+    expect(asHuman.speed).toBeLessThan(asBot.speed);
+    expect(asHuman.s).toBeLessThan(asBot.s);
+  });
+
+  it('hands the rider back to the AI the moment the input stops arriving', () => {
+    const w = new World({ seed: 3 });
+    startRace(w);
+    const rival = w.rivals[0];
+    for (let i = 0; i < 60; i++) w.step(DT, FLAT_OUT, drive(rival));
+    const whileRidden = rival.ai!.planTimer;
+
+    // The peer drops: no map at all, exactly as a disconnect looks.
+    for (let i = 0; i < 60; i++) w.step(DT, FLAT_OUT);
+
+    expect(rival.ai!.planTimer).toBeLessThan(whileRidden);
+    expect(rival.state).toBe('ride');
+  });
+
+  it('ignores an id that is not on the grid', () => {
+    const w = new World({ seed: 3 });
+    startRace(w);
+    const ghost = new Map([[9999, COASTING]]);
+    expect(() => {
+      for (let i = 0; i < 30; i++) w.step(DT, FLAT_OUT, ghost);
+    }).not.toThrow();
+    expect(w.state).toBe('racing');
+  });
+
+  it('will not let the wire drive the local player', () => {
+    const plain = new World({ seed: 9 });
+    const spoofed = new World({ seed: 9 });
+    startRace(plain);
+    startRace(spoofed);
+
+    for (let i = 0; i < 120; i++) {
+      plain.step(DT, FLAT_OUT);
+      // Someone claims to be riding the local player, and is ignored.
+      spoofed.step(DT, FLAT_OUT, drive(spoofed.player));
+    }
+
+    expect(spoofed.player.s).toBeCloseTo(plain.player.s, 6);
+    expect(spoofed.player.speed).toBeCloseTo(plain.player.speed, 6);
+  });
+
+  it('keeps an arresting patrol on its park line rather than on the wire', () => {
+    const w = new World({ seed: 11 });
+    startRace(w);
+    const cop = w.spawnCop();
+    cop.s = w.player.s - 6;
+    cop.lateral = w.player.lateral + 2;
+    knockDown(w.player, 1);
+
+    let guard = 0;
+    while (!w.arrestPending && guard++ < 60 * 4) w.step(DT, INPUT({ throttle: 0 }));
+    expect(w.arrestPending).toBe(true);
+
+    // Tell the patrol to floor it. The park override runs first, so it parks.
+    for (let i = 0; i < 60 && !w.isOver; i++) {
+      w.step(DT, INPUT({ throttle: 0 }), drive(cop, FLAT_OUT));
+    }
+    expect(cop.speed).toBeLessThan(POLICE.parkCreepSpeed + 1);
+  });
+});
+
+describe('World: the start line belongs to everyone', () => {
+  const GAS = INPUT({ throttle: 1 });
+
+  /** Run the lights out, with `remote` driving whoever it names. */
+  function launch(w: World, playerInput: RacerInput, remote?: Map<number, RacerInput>) {
+    let guard = 0;
+    while (w.state === 'countdown' && guard++ < 1000) w.step(DT, playerInput, remote);
+  }
+
+  it('gives a remote rider the holeshot for nailing the lights', () => {
+    // Before this, only seat 0 could ever launch well - every remote rider
+    // was stuck watching the local player get a boost they could not earn.
+    const w = new World({ seed: 21 });
+    const rival = w.rivals[0];
+    launch(w, INPUT(), new Map([[rival.id, GAS]]));
+    expect(rival.boostTimer).toBeGreaterThan(0);
+  });
+
+  it('denies it to a remote rider who is not on the gas at the lights', () => {
+    const w = new World({ seed: 21 });
+    const rival = w.rivals[0];
+    launch(w, INPUT(), new Map([[rival.id, INPUT({ throttle: 0 })]]));
+    expect(rival.boostTimer).toBe(0);
+  });
+
+  it('stays armed once the gas is touched inside the window', () => {
+    // Quirk of the existing rule, recorded rather than changed: arming is
+    // sticky, so letting go after touching the gas inside the last 0.55s
+    // still launches. Remote riders now behave exactly as the local player
+    // always has, which is the point of this change.
+    const w = new World({ seed: 21 });
+    const rival = w.rivals[0];
+    let guard = 0;
+    while (w.state === 'countdown' && guard++ < 1000) {
+      const onGas = w.countdown > 0.3;
+      w.step(DT, INPUT(), new Map([[rival.id, INPUT({ throttle: onGas ? 1 : 0 })]]));
+    }
+    expect(rival.boostTimer).toBeGreaterThan(0);
+
+    // ...and the local player does the same thing, given the same input.
+    const local = new World({ seed: 21 });
+    let g2 = 0;
+    while (local.state === 'countdown' && g2++ < 1000) {
+      local.step(DT, INPUT({ throttle: local.countdown > 0.3 ? 1 : 0 }));
+    }
+    expect(local.player.boostTimer).toBeGreaterThan(0);
+  });
+
+  it('never gives it to a rider the AI is driving', () => {
+    const w = new World({ seed: 21 });
+    launch(w, GAS);
+    for (const r of w.rivals) expect(r.boostTimer).toBe(0);
+  });
+
+  it('still gives it to the local player', () => {
+    const w = new World({ seed: 21 });
+    const events = startRace(w, GAS);
+    expect(w.player.boostTimer).toBeGreaterThan(0);
+    expect(events.some((e) => e.type === 'holeshot')).toBe(true);
+  });
+
+  it('reports the holeshot event only for the local player', () => {
+    const w = new World({ seed: 21 });
+    const rival = w.rivals[0];
+    const events: SimEvent[] = [];
+    let guard = 0;
+    while (w.state === 'countdown' && guard++ < 1000) {
+      events.push(...w.step(DT, INPUT(), new Map([[rival.id, GAS]])));
+    }
+    // The rival got the boost; the cue on screen is the player's alone.
+    expect(rival.boostTimer).toBeGreaterThan(0);
+    expect(events.some((e) => e.type === 'holeshot')).toBe(false);
+  });
+});
+
+describe('World: telling riders apart', () => {
+  it('gives every rider on the grid a different colour', () => {
+    // Two bikes in the same colour is the one thing that makes a pack
+    // unreadable at speed.
+    for (const seed of [1, 7, 42, 999]) {
+      const w = new World({ seed });
+      const colours = new Set(w.racers.map((r) => r.color));
+      expect(colours.size, `seed ${seed}`).toBe(w.racers.length);
+    }
+  });
+
+  it('deals a different grid each race', () => {
+    const a = new World({ seed: 1 }).racers.map((r) => r.color);
+    const b = new World({ seed: 2 }).racers.map((r) => r.color);
+    expect(a).not.toEqual(b);
+  });
+
+  it('deals the identical grid to everyone on the same seed', () => {
+    // Every browser in a room rebuilds the field from the room's seed. If the
+    // shuffle used Math.random the same rider would wear different colours on
+    // different screens.
+    const a = new World({ seed: 4242 }).racers.map((r) => r.color);
+    const b = new World({ seed: 4242 }).racers.map((r) => r.color);
+    expect(a).toEqual(b);
+  });
+
+  it('starts with the camera on the local rider', () => {
+    const w = new World({ seed: 3 });
+    expect(w.localRacer).toBe(w.player);
   });
 });

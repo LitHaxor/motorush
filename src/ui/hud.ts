@@ -65,17 +65,36 @@ export class Hud {
           default: break;
         }
       };
-      btn.addEventListener('pointerdown', press(true));
+      // Pointer events where they exist - every current mobile browser, iOS
+      // Safari included - and raw touch events where they do not, so an older
+      // Safari still gets working controls rather than dead buttons.
+      if (typeof window.PointerEvent !== 'function') {
+        btn.addEventListener('touchstart', press(true), { passive: false });
+        btn.addEventListener('touchend', press(false));
+        btn.addEventListener('touchcancel', press(false));
+        btn.addEventListener('contextmenu', (e) => e.preventDefault());
+        continue;
+      }
+
+      btn.addEventListener('pointerdown', (e) => {
+        // Capture the pointer so a finger that slides off the button keeps
+        // driving it - on a phone your thumb never stays put.
+        try {
+          btn.setPointerCapture((e as PointerEvent).pointerId);
+        } catch {
+          /* not all pointers can be captured; the handlers still work */
+        }
+        press(true)(e);
+      });
       btn.addEventListener('pointerup', press(false));
       btn.addEventListener('pointercancel', press(false));
-      btn.addEventListener('pointerleave', press(false));
       btn.addEventListener('contextmenu', (e) => e.preventDefault());
     }
   }
 
   // --------------------------------------------------------------- per frame
   update(world: World, dt: number): void {
-    const p = world.player;
+    const p = world.localRacer;
 
     this.place.textContent = ordinal(p.place);
     this.field.textContent = `/ ${world.racers.length}`;
@@ -159,7 +178,7 @@ export class Hud {
 
   /** Turn events into readable feedback. */
   handleEvents(events: readonly SimEvent[], world: World): void {
-    const player = world.player;
+    const player = world.localRacer;
     for (const e of events) {
       switch (e.type) {
         case 'countdown':

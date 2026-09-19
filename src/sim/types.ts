@@ -81,6 +81,17 @@ export interface Racer {
   /** Stops a sustained barrier graze re-damaging you every single tick. */
   scrapeCooldown: number;
   /** Metres the rider is currently separated from their bike. */
+  /**
+   * Height of the bike above the road, in metres.
+   *
+   * Only ever non-zero for a moment: clipping somebody sends the front wheel
+   * up and the bike comes straight back down. Lives on the racer rather than
+   * in the renderer so it travels in a snapshot - a guest has to see the
+   * rider in front of them get launched too.
+   */
+  hop: number;
+  /** Vertical speed, m/s. Gravity brings it back. */
+  hopVel: number;
   riderThrow: number;
   riderThrowTarget: number;
   /** Sideways displacement of the rider - a barrier crash throws them over it. */

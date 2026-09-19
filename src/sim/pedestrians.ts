@@ -4,7 +4,7 @@
 // Only the ones near the player are simulated, so a city full of them costs
 // almost nothing.
 
-import { TRACK } from './config';
+import { HOP, CITY, TRACK } from './config';
 import { clamp } from './mathx';
 import { isRiding } from './racer';
 import type { Racer, Rng, SimEvent } from './types';
@@ -13,9 +13,25 @@ export const PED = {
   /** Crossings are spaced along each built-up stretch. */
   crossingSpacing: [95, 190] as [number, number],
   perCrossing: [1, 3] as [number, number],
-  walkSpeed: [1.1, 1.9] as [number, number],
+  /**
+   * Crossing pace.
+   *
+   * Scaled up with the crossing itself: moving people off the carriageway and
+   * onto the kerb made the walk 28m instead of 23m, and at the old pace that
+   * extra time in the road cost Outlaw six finishes in a forty-eight seed
+   * sweep. They step out further, so they step out faster.
+   */
+  walkSpeed: [1.35, 2.3] as [number, number],
   /** Seconds waiting on the kerb before stepping out again. */
   waitTime: [1.5, 5] as [number, number],
+  /**
+   * What clipping somebody costs you.
+   *
+   * A share rather than a flat figure: a fixed 25km/h was tried and it is
+   * brutal at low speed and barely felt at high, and a 48-seed sweep put
+   * Outlaw under the completable floor with it.
+   */
+  speedPenalty: 0.93,
   /** Only simulate within this distance of the player. */
   activeRange: 260,
   /** People lining the verge at the start line. */
@@ -27,7 +43,6 @@ export const PED = {
   hitLength: 1.1,
   hitWidth: 0.9,
   /** Speed the rider loses for clattering into someone. */
-  speedPenalty: 0.93,
   /** Seconds spent airborne + flat out before they pick themselves up. */
   downTime: 6,
   gravity: -17,
@@ -90,7 +105,10 @@ export function generatePedestrians(
   const crossings: Crossing[] = [];
   const pedestrians: Pedestrian[] = [];
   let id = 0;
-  const span = TRACK.halfWidth + 2.5;
+  // Crossers wait on the kerb and step off it, so they start where the
+  // pavement is - not at 11.5m, which is inside the barrier and reads as
+  // somebody standing about in the middle of the road.
+  const span = TRACK.halfWidth + CITY.walkway[0];
 
   for (const seg of citySpans) {
     let s = seg.from + rng.range(40, 90);
@@ -158,7 +176,10 @@ export function generatePedestrians(
   // --- city pavements ------------------------------------------------------
   // People going about their business on both pavements. They stay on the
   // kerb, so you only hit one if you leave the road.
-  const pavement = TRACK.halfWidth + TRACK.shoulder + 2.2;
+  // On the pavement: past the barrier at 4.5 so nobody is standing in the
+  // road, and short of the building line at 8 so nobody is standing in a wall.
+  const pavement = TRACK.halfWidth + CITY.walkway[0];
+  const pavementSpread = CITY.walkway[1] - CITY.walkway[0];
   for (const seg of citySpans) {
     const count = Math.round(((seg.to - seg.from) / 100) * PED.walkersPer100m);
     for (let i = 0; i < count; i++) {
@@ -168,7 +189,7 @@ export function generatePedestrians(
           id: id++,
           kind: 'walker',
           s: rng.range(seg.from, seg.to),
-          lateral: side * (pavement + rng.range(0, 2.4)),
+          lateral: side * (pavement + rng.range(0, pavementSpread)),
           height: 0,
           dir: side,
           speed: rng.range(PED.strollSpeed[0], PED.strollSpeed[1]),
@@ -180,7 +201,7 @@ export function generatePedestrians(
           spin: 0,
           spinRate: 0,
           colour: rng.pick(PED_COLOURS),
-          span: pavement + 4,
+          span: pavement + pavementSpread,
           along,
           minS: seg.from - 10,
           maxS: seg.to + 10,
@@ -301,6 +322,10 @@ export function stepPedestrians(
       if (Math.abs(r.lateral - p.lateral) > PED.hitWidth) continue;
 
       launch(p, r.speed, r.lateral);
+      // Ride over somebody and the bike goes light: a kick up, scaled by how
+      // fast you were going, that gravity takes back over the next moment.
+      const force = Math.min(1, r.speed / HOP.launchAt);
+      r.hopVel = Math.max(r.hopVel, HOP.launch * force);
       r.speed *= PED.speedPenalty;
       events.push({ type: 'pedestrianHit', racer: r, pedestrian: p, impact: r.speed });
       break;

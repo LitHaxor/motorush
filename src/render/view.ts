@@ -32,6 +32,7 @@ import { ParticleField, CameraShake } from './effects';
 import { loadGroundTextures, type GroundTextures } from './assets';
 import { loadModels, CAR_MODELS, type ModelLibrary } from './models';
 import { loadFoliageAtlas, buildTreeVariants, buildGrassTuft, type TreeVariant } from './foliage';
+import { type NameTag, makeNameTag, updateNameTag } from './nametag';
 
 export type QualityLevel = 'low' | 'high';
 
@@ -63,10 +64,48 @@ const CAM = {
   boostFov: 5,
 };
 
+/** The aspect the camera's field of view was tuned against. */
+const REFERENCE_ASPECT = 16 / 9;
+/**
+ * Beyond this the bike starts to look like it is a street away.
+ *
+ * Fully preserving the horizontal view wants 1.85 on a tall phone, and that
+ * reads as the camera having backed off down the road - everything shrinks.
+ * Half-compensating gets the road back at the edges without pushing the rider
+ * into the distance.
+ */
+const MAX_FOV_SCALE = 1.28;
+
+/**
+ * How much to widen the vertical field of view at this aspect ratio.
+ *
+ * 1 on anything at least as wide as the reference, climbing as the screen
+ * narrows so the horizontal view stays put. Exported for the tests, which is
+ * the only way to check the maths without a GPU.
+ */
+export function fovScaleFor(aspect: number): number {
+  if (!Number.isFinite(aspect) || aspect <= 0) return 1;
+  if (aspect >= REFERENCE_ASPECT) return 1;
+  // Square root, not the ratio itself: compensate part of the way so the view
+  // widens without the rider receding.
+  return Math.min(MAX_FOV_SCALE, Math.sqrt(REFERENCE_ASPECT / aspect));
+}
+
 export class GameView {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
+  /**
+   * Widens the (vertical) field of view on a screen narrower than the one the
+   * camera was tuned for.
+   *
+   * Three's fov is vertical, so a phone held upright keeps the same slice of
+   * sky and loses the road either side - the game ends up feeling zoomed in on
+   * exactly the device with the least screen. Scaling here keeps the
+   * HORIZONTAL view roughly constant instead, so everyone sees the same width
+   * of road.
+   */
+  private fovScale = 1;
 
   private composer!: EffectComposer;
   private bloom!: UnrealBloomPass;
@@ -88,6 +127,9 @@ export class GameView {
   private pavements: { group: THREE.Group; dispose(): void } | null = null;
 
   private readonly bikeRigs = new Map<number, BikeRig>();
+  private readonly nameTags = new Map<number, NameTag>();
+  /** What each tag currently reads, so a rename can be spotted cheaply. */
+  private readonly taggedNames = new Map<number, string>();
   private readonly riderRigs = new Map<number, RiderRig>();
   private readonly ragdolls = new Map<number, Ragdoll>();
   private readonly crashFx = new Map<number, CrashFx>();
@@ -264,7 +306,7 @@ export class GameView {
       this.scene.add(rig.root);
     }
 
-    this.camLateral = world.player.lateral;
+    this.camLateral = world.localRacer.lateral;
   }
 
   /** Swap in a fresh race (new seed means a new track, so this rebuilds). */
@@ -292,6 +334,15 @@ export class GameView {
   }
 
   private teardownWorld(): void {
+    // Tags first: they are children of the bike roots, so disposing the rigs
+    // out from under them would leak a canvas texture per rider per race.
+    for (const tag of this.nameTags.values()) {
+      tag.sprite.removeFromParent();
+      tag.dispose();
+    }
+    this.nameTags.clear();
+    this.taggedNames.clear();
+
     for (const rig of this.bikeRigs.values()) {
       this.scene.remove(rig.root);
       rig.dispose();
@@ -406,7 +457,7 @@ export class GameView {
   // ---------------------------------------------------------------- events
   /** Turn simulation events into sparks, dust and camera shake. */
   handleEvents(events: readonly SimEvent[]): void {
-    const player = this.world.player;
+    const player = this.world.localRacer;
     for (const e of events) {
       switch (e.type) {
         case 'crash': {
@@ -455,7 +506,7 @@ export class GameView {
   }
 
   private near(r: Racer): boolean {
-    return Math.abs(r.s - this.world.player.s) < 45;
+    return Math.abs(r.s - this.world.localRacer.s) < 45;
   }
 
   private worldPos(r: Racer, height: number): THREE.Vector3 {
@@ -504,8 +555,41 @@ export class GameView {
 
         this.ragdolls.set(r.id, new Ragdoll());
         this.crashFx.set(r.id, { tumble: new BikeTumble(), standT: 0, runPhase: 0 });
+
+        // Hung off the root rather than the chassis so the name stays upright
+        // while the bike leans and cartwheels underneath it.
+        const tag = makeNameTag(r.name);
+        this.nameTags.set(r.id, tag);
+        this.taggedNames.set(r.id, r.name);
+        bike.root.add(tag.sprite);
       }
       this.poseRacer(bike, r, dt);
+
+      // A rider who joined mid-race arrives already named; their bike was
+      // built wearing a bot's name, so the baked texture has to be redrawn.
+      if (this.taggedNames.get(r.id) !== r.name) {
+        const stale = this.nameTags.get(r.id);
+        if (stale) {
+          stale.sprite.removeFromParent();
+          stale.dispose();
+        }
+        const fresh = makeNameTag(r.name);
+        this.nameTags.set(r.id, fresh);
+        this.taggedNames.set(r.id, r.name);
+        bike.root.add(fresh.sprite);
+      }
+
+      const tag = this.nameTags.get(r.id);
+      if (tag) {
+        // Never over your own head, and never over a rider on the floor -
+        // a label hovering above a crash reads as a glitch.
+        const isMe = r.id === this.world.localRacer.id;
+        updateNameTag(
+          tag,
+          Math.abs(r.s - this.world.localRacer.s),
+          !isMe && r.state !== 'down',
+        );
+      }
     }
 
     // Retire rigs for racers that have left the field (a cop giving up).
@@ -514,6 +598,13 @@ export class GameView {
       this.scene.remove(bike.root);
       bike.dispose();
       this.bikeRigs.delete(id);
+      const tag = this.nameTags.get(id);
+      if (tag) {
+        tag.sprite.removeFromParent();
+        tag.dispose();
+        this.nameTags.delete(id);
+        this.taggedNames.delete(id);
+      }
       const rider = this.riderRigs.get(id);
       if (rider) {
         rider.root.removeFromParent();
@@ -534,7 +625,8 @@ export class GameView {
     if (!rider || !ragdoll || !fx) return;
 
     const p = track.toWorld(r.s, r.lateral, this.tmpSample);
-    bike.root.position.set(p.x, p.y, p.z);
+    // r.hop lifts the whole rig, so the rider and their shadow go up with it.
+    bike.root.position.set(p.x, p.y + r.hop, p.z);
     bike.root.rotation.y = p.heading;
 
     const wasDown = (this.downAnim.get(r.id) ?? 0) > 0.5;
@@ -569,7 +661,7 @@ export class GameView {
       // Lean: positive lean tips to the rider's right, which is -Z rotation.
       bike.chassis.rotation.z = -r.lean * (1 - down);
       // Fork dive under braking and from the weight transfer of hard accel.
-      const braking = r.id === this.world.player.id ? this.playerBrake : 0;
+      const braking = r.id === this.world.localRacer.id ? this.playerBrake : 0;
       const dive = clamp(braking * 0.85 + (r.stagger > 0 ? 0.3 : 0), 0, 1);
       // Smooth the travel so the forks settle rather than snapping.
       fx.standT = damp(fx.standT, dive, 9, dt);
@@ -616,7 +708,7 @@ export class GameView {
       rider.root.scale.setScalar(1);
 
       const speedNorm = clamp(r.speed / BIKE.maxSpeed, 0, 1);
-      const braking = r.id === this.world.player.id ? this.playerBrake : 0;
+      const braking = r.id === this.world.localRacer.id ? this.playerBrake : 0;
       poseRiding(rider.skeleton, {
         tuck: speedNorm * speedNorm,
         lean: clamp(r.lean / BIKE.leanMax, -1, 1),
@@ -630,7 +722,7 @@ export class GameView {
 
     // --- surface FX ------------------------------------------------------
     // Only spend particles on riders the camera can actually see.
-    const visible = Math.abs(r.s - this.world.player.s) < 70;
+    const visible = Math.abs(r.s - this.world.localRacer.s) < 70;
     if (visible) {
       if (r.state === 'ride' && track.isOffRoad(r.lateral) && r.speed > 6 && Math.random() < 0.55) {
         this.particles.dust(this.worldPos(r, 0.15), 2);
@@ -815,7 +907,7 @@ export class GameView {
         continue;
       }
       // Only animate the ones you can actually see.
-      const ds = pickup.s - this.world.player.s;
+      const ds = pickup.s - this.world.localRacer.s;
       const visible = ds > -30 && ds < 320;
       rig.root.visible = visible;
       if (visible) {
@@ -827,7 +919,7 @@ export class GameView {
 
   /** Position and animate the crowd near the player. */
   private syncPedestrians(_dt: number): void {
-    const playerS = this.world.player.s;
+    const playerS = this.world.localRacer.s;
     for (const ped of this.world.pedestrians) {
       const rig = this.pedRigs.get(ped.id);
       if (!rig) continue;
@@ -884,7 +976,7 @@ export class GameView {
 
   private updateCamera(dt: number, playerInput?: Readonly<RacerInput>): void {
     const world = this.world;
-    const p = world.player;
+    const p = world.localRacer;
     const track = world.track;
     const speedNorm = clamp(p.speed / BIKE.maxSpeed, 0, 1);
 
@@ -915,7 +1007,8 @@ export class GameView {
     this.camera.rotateZ(this.shake.roll);
 
     const boost = p.boostTimer > 0 ? 1 : 0;
-    const targetFov = CAM.baseFov + speedNorm * CAM.speedFov + boost * CAM.boostFov;
+    const targetFov =
+      (CAM.baseFov + speedNorm * CAM.speedFov + boost * CAM.boostFov) * this.fovScale;
     this.camera.fov = damp(this.camera.fov, targetFov, 4, dt);
     this.camera.updateProjectionMatrix();
 
@@ -936,7 +1029,7 @@ export class GameView {
 
   private updateSun(): void {
     // Keep the shadow frustum centred on the player.
-    const p = this.world.player;
+    const p = this.world.localRacer;
     const at = this.world.track.toWorld(p.s + 12, p.lateral, this.tmpSample);
     const dir = this.preset.sunDir;
     this.sun.position.set(at.x + dir[0] * 90, at.y + dir[1] * 90 + 40, at.z + dir[2] * 90);
@@ -949,6 +1042,7 @@ export class GameView {
     const w = this.canvas.clientWidth || window.innerWidth;
     const h = this.canvas.clientHeight || window.innerHeight;
     this.camera.aspect = w / h;
+    this.fovScale = fovScaleFor(this.camera.aspect);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
     this.composer.setSize(w, h);

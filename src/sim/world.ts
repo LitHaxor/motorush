@@ -64,6 +64,20 @@ export class World implements AiWorldView {
   readonly pedestrians: Pedestrian[];
 
   readonly player: Racer;
+
+  /**
+   * The rider this screen belongs to.
+   *
+   * Almost always `player` (racer 0). On a guest it is the racer in the seat
+   * they took, because every browser builds the identical eight-rider field
+   * and seat 0 belongs to the host. Getting this wrong pointed every guest's
+   * camera at the host's bike, so two players watched one motorcycle.
+   *
+   * Only the camera, HUD and audio follow this. Everything the simulation
+   * decides still revolves around `player`, which is what the host simulates
+   * and what the snapshots overwrite.
+   */
+  localRacer: Racer;
   readonly rivals: Racer[] = [];
   cop: Racer | null = null;
   readonly racers: Racer[];
@@ -82,7 +96,14 @@ export class World implements AiWorldView {
   standings: Racer[] = [];
 
   private lastLight = 4;
-  private holeshotArmed = false;
+  /**
+   * Racer ids holding the throttle at the right moment.
+   *
+   * A set rather than a flag: every rider on the grid can nail the start, and
+   * a remote rider's throttle arrives in `remoteInputs` exactly like the local
+   * player's. Before this, only seat 0 could ever get the launch boost.
+   */
+  private holeshotArmed = new Set<number>();
 
   constructor({ seed = Date.now() & 0xffff, difficulty = 'normal', riderName = 'YOU' }: WorldOptions = {}) {
     const preset = DIFFICULTY[difficulty] ?? DIFFICULTY.normal;
@@ -123,11 +144,22 @@ export class World implements AiWorldView {
     this.pedestrians = crowd.pedestrians;
 
     // --- the field ------------------------------------------------------
+    // Colours are dealt from a shuffled palette rather than fixed per seat, so
+    // the grid looks different every race. Shuffled with the world RNG, not
+    // Math.random: every browser in a room builds this field from the same
+    // seed, and riders wearing different colours on different screens would
+    // make a mess of "the red one just knocked me off".
+    const palette = [...RIDER_COLORS];
+    for (let i = palette.length - 1; i > 0; i--) {
+      const j = this.rng.int(0, i);
+      [palette[i], palette[j]] = [palette[j]!, palette[i]!];
+    }
+
     this.player = createRacer({
       id: 0,
       kind: 'player',
       name: riderName,
-      color: RIDER_COLORS[0],
+      color: palette[0]!,
       s: 0,
       lateral: TRACK.laneCentres[PLAYER_GRID_SLOT],
       speedScale: 1,
@@ -147,7 +179,7 @@ export class World implements AiWorldView {
         id: i + 1,
         kind: 'rival',
         name: name ?? `RIDER ${i + 1}`,
-        color: RIDER_COLORS[(i + 1) % RIDER_COLORS.length],
+        color: palette[(i + 1) % palette.length]!,
         s: -(row * GRID_ROW_GAP + (column % 2) * GRID_STAGGER),
         lateral: TRACK.laneCentres[column],
         speedScale: skill,
@@ -158,6 +190,7 @@ export class World implements AiWorldView {
     }
 
     this.racers = [this.player, ...this.rivals];
+    this.localRacer = this.player;
     this.traffic.prime(200);
     this.updateStandings();
   }
@@ -323,7 +356,20 @@ export class World implements AiWorldView {
     return startAttack(this.player, dir);
   }
 
-  step(dt: number, playerInput: Readonly<RacerInput> = NEUTRAL_INPUT): SimEvent[] {
+  /**
+   * Advance the world one fixed step.
+   *
+   * `remoteInputs` drives named racers from outside the sim, keyed by
+   * `Racer.id` so the key survives a trip over the network. Anything absent
+   * from the map is ridden by the AI as usual, which is what makes a rider
+   * swappable: supply an entry and a bot becomes a human, drop it and the
+   * same racer is a bot again on the very next tick.
+   */
+  step(
+    dt: number,
+    playerInput: Readonly<RacerInput> = NEUTRAL_INPUT,
+    remoteInputs?: ReadonlyMap<number, Readonly<RacerInput>>,
+  ): SimEvent[] {
     const events: SimEvent[] = [];
     if (this.isOver) {
       // Keep the world alive behind the results screen.
@@ -338,16 +384,23 @@ export class World implements AiWorldView {
         this.lastLight = light;
         events.push({ type: 'countdown', value: Math.max(0, light) });
       }
-      // Hold the throttle as the lights go out for a launch boost.
-      const onGas = (playerInput.throttle ?? 0) > 0.5;
-      if (this.countdown < 0.55 && onGas) this.holeshotArmed = true;
-      else if (this.countdown >= 0.55 && onGas) this.holeshotArmed = false; // jumped the start
+      // Hold the throttle as the lights go out for a launch boost. Every
+      // human on the grid gets the same chance, local or not.
+      for (const r of this.field) {
+        const input = r === this.player ? playerInput : remoteInputs?.get(r.id);
+        if (!input) continue; // AI riders do not get a holeshot
+        const onGas = (input.throttle ?? 0) > 0.5;
+        if (this.countdown < 0.55 && onGas) this.holeshotArmed.add(r.id);
+        else if (this.countdown >= 0.55 && onGas) this.holeshotArmed.delete(r.id); // jumped the start
+      }
 
       if (this.countdown <= 0) {
         this.state = 'racing';
-        if (this.holeshotArmed) {
-          this.player.boostTimer = 1.8;
-          events.push({ type: 'holeshot' });
+        for (const r of this.field) {
+          if (!this.holeshotArmed.has(r.id)) continue;
+          r.boostTimer = 1.8;
+          // The event is the local player's cue; other riders just get the boost.
+          if (r === this.player) events.push({ type: 'holeshot' });
         }
         events.push({ type: 'go' });
       }
@@ -368,7 +421,11 @@ export class World implements AiWorldView {
         inputs.set(r, copParkInput(r, this.player.s, parkSpotBeside(this.player, this.track)));
         continue;
       }
-      inputs.set(r, aiInput(r, this, dt));
+      // Someone else riding this one takes their input off the wire. The AI
+      // is skipped rather than run-and-discarded, so it does not plan on a
+      // human's behalf while they are connected.
+      const remote = remoteInputs?.get(r.id);
+      inputs.set(r, remote ?? aiInput(r, this, dt));
     }
 
     // --- integrate ----------------------------------------------------------

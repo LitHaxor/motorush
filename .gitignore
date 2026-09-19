@@ -9,3 +9,7 @@ blob-report/
 *.local
 .env*
 !.env.example
+
+# Firebase emulator artefacts
+*-debug.log
+.firebase/

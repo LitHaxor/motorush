@@ -1,0 +1,9 @@
+{
+  // Firebase parses its rules files leniently and `firebase init` generates
+  // them with comments, but the .json extension makes editors apply strict
+  // JSON. Treat them as JSON-with-comments so the annotations survive.
+  "files.associations": {
+    "database.rules.json": "jsonc",
+    "firestore.rules.json": "jsonc"
+  }
+}

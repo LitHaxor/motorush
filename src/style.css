@@ -64,7 +64,7 @@ button { font-family: inherit; cursor: pointer; }
   background: var(--panel);
   color: var(--ink);
   font-size: 18px;
-  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
 }
 .mute:hover { border-color: var(--hot); }
 
@@ -142,7 +142,7 @@ button { font-family: inherit; cursor: pointer; }
   position: absolute; top: calc(18px + var(--safe-t)); left: 50%; transform: translateX(-50%);
   width: min(58vw, 340px); text-align: center;
   background: rgba(20,6,8,0.75); border: 1px solid rgba(255,45,61,0.55);
-  border-radius: 10px; padding: 8px 12px; backdrop-filter: blur(6px);
+  border-radius: 10px; padding: 8px 12px; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   animation: sirenGlow 1s infinite;
 }
 @keyframes sirenGlow {
@@ -201,33 +201,61 @@ button { font-family: inherit; cursor: pointer; }
 .damage-flash.is-hit { opacity: 1; transition: opacity 0.06s; }
 
 /* --- touch --- */
-.touch { position: absolute; inset: 0; pointer-events: none; }
+/* Above the HUD, below the menus. Without a z-index this sat underneath the
+   .screens layer, which covers the whole viewport - so every tap on the
+   controls was being swallowed by an invisible, empty overlay. */
+.touch { position: fixed; inset: 0; z-index: 25; pointer-events: none; }
 .touch[hidden] { display: none; }
-.touch__pad { position: absolute; bottom: calc(18px + var(--safe-b)); display: flex; gap: 10px; pointer-events: auto; }
+.touch__pad {
+  position: absolute; bottom: calc(18px + var(--safe-b));
+  display: flex; gap: 10px; pointer-events: auto;
+  /* Without this the browser treats a press as the start of a scroll, fires
+     pointercancel, and the button releases itself the instant you touch it -
+     which reads as the controls simply not working. */
+  touch-action: none;
+}
 .touch__pad--left { left: calc(16px + var(--safe-l)); }
-.touch__pad--right { right: calc(16px + var(--safe-r)); flex-wrap: wrap; width: min(46vw, 230px); justify-content: flex-end; }
+/* A fixed 2x2 block under the right thumb: punches on top, brake and gas
+   beneath. Flex-wrapping put three across and stranded GAS on a row of its
+   own, jammed into the very corner. */
+.touch__pad--right {
+  right: calc(16px + var(--safe-r));
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 10px;
+  width: auto;
+}
 .touch__btn {
   width: 66px; height: 66px; border-radius: 16px;
   border: 1px solid var(--edge); background: rgba(10,13,20,0.6);
   color: var(--ink); font-size: 20px; font-weight: 800;
-  backdrop-filter: blur(4px); user-select: none; -webkit-user-select: none;
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); user-select: none; -webkit-user-select: none;
+  touch-action: none;
+  /* No grey flash on tap, and no double-tap-to-zoom swallowing the press. */
+  -webkit-tap-highlight-color: transparent;
 }
 .touch__btn:active, .touch__btn.is-down { background: rgba(255,90,31,0.55); border-color: var(--hot); }
-.touch__btn--gas { background: rgba(37,211,102,0.28); font-size: 13px; }
+/* The one you hold for the whole race, so it gets the most room. */
+.touch__btn--gas { background: rgba(37,211,102,0.28); font-size: 13px; height: 84px; }
 .touch__btn--brake { font-size: 11px; }
 .touch__btn--punch { font-size: 22px; }
 
 /* ============================ screens ============================ */
-.screens { position: fixed; inset: 0; z-index: 30; }
+/* The container spans the viewport permanently, so it must not take input -
+   only the screen actually being shown does. */
+.screens { position: fixed; inset: 0; z-index: 30; pointer-events: none; }
 .screens:empty { display: none; }
 
 .screen {
   position: absolute; inset: 0;
+  /* The container is pointer-events:none so it never blocks the touch
+     controls; a screen that is actually on screen takes input again. */
+  pointer-events: auto;
   display: flex; align-items: center; justify-content: center;
   padding: max(20px, 4vh) 20px;
   overflow-y: auto;
   background: rgba(6, 8, 12, 0.72);
-  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   animation: fadeIn 0.28s ease both;
 }
 .screen[hidden] { display: none; }
@@ -461,4 +489,198 @@ button { font-family: inherit; cursor: pointer; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* ------------------------------------------------------------------ lobby */
+
+.menu__online {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.joinrow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.joinrow .btn {
+  flex: 0 0 auto;
+}
+
+.field__input--code {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+}
+
+.menu__note {
+  min-height: 1.2em;
+  margin: 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  color: var(--warn, #ffb454);
+}
+
+.panel--lobby {
+  max-width: 30rem;
+  text-align: center;
+}
+
+.lobby__title {
+  margin: 0 0 0.25rem;
+  letter-spacing: 0.3em;
+}
+
+.lobby__code {
+  margin: 0 0 0.25rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.lobby__code-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.3em;
+  opacity: 0.7;
+}
+
+.lobby__code strong {
+  font-size: 2.4rem;
+  letter-spacing: 0.4em;
+  /* Padding-left offsets the trailing letter-space so it reads centred. */
+  padding-left: 0.4em;
+}
+
+.lobby__hint {
+  margin: 0 0 1rem;
+  font-size: 0.78rem;
+  opacity: 0.72;
+}
+
+.grid-list {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+  text-align: left;
+}
+
+.grid-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.3rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+}
+
+.grid-list li.is-bot {
+  opacity: 0.45;
+}
+
+.grid-list li.is-you {
+  border-color: rgba(255, 180, 84, 0.75);
+}
+
+.grid-list .seat-no {
+  font-size: 0.72rem;
+  opacity: 0.6;
+  min-width: 1.4em;
+}
+
+.grid-list .seat-tag {
+  margin-left: auto;
+  font-size: 0.68rem;
+  letter-spacing: 0.18em;
+  opacity: 0.7;
+}
+
+.lobby__clock {
+  margin: 0 0 0.8rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.22em;
+  opacity: 0.8;
+}
+
+@media (max-width: 480px) {
+  .lobby__code strong { font-size: 1.8rem; }
+  .grid-list li { font-size: 0.78rem; }
+}
+
+/* ---------------------------------------------------------------- portrait */
+/*
+ * A phone held upright is the tightest case: the HUD corners are close enough
+ * to collide with each other, and the bottom two sit exactly where the touch
+ * controls are. Everything here is layout only - nothing is hidden, so the
+ * same information is on screen whatever you are playing on.
+ */
+@media (max-width: 560px) {
+  /* The title plates are nowrap, so the only thing that can give is the size.
+     At 8.2vw the two of them ran off both edges of the screen. */
+  .logo { font-size: clamp(20px, 6.6vw, 40px); }
+  .logo__plate:first-of-type { padding-right: 0.55em; }
+  .logo__plate:last-of-type { padding-left: 0.5em; }
+
+  .place { font-size: 32px; }
+  .timer { font-size: 15px; }
+
+  /* Keep the heat and distance readouts clear of the place counter and of the
+     mute button, and let them wrap rather than overlap. */
+  .hud__corner--tr {
+    right: calc(14px + var(--safe-r));
+    top: calc(64px + var(--safe-t));
+    max-width: 52vw;
+  }
+
+  /* Above the touch pads, not behind them. The right pad wraps to two rows of
+     66px buttons, so this clears both. */
+  .hud__corner--bl,
+  .hud__corner--br {
+    bottom: calc(156px + var(--safe-b));
+  }
+
+  .speedo__value { font-size: 40px; }
+
+  .touch__btn { width: 60px; height: 60px; }
+}
+
+/*
+ * Landscape on a phone: short, not narrow.
+ *
+ * Orientation cannot be forced on iOS Safari - screen.orientation.lock() is
+ * unsupported there - so landscape has to actually work rather than be
+ * refused. The menu is taller than a phone laid on its side, so it scrolls
+ * instead of spilling off both ends.
+ */
+@media (max-height: 520px) and (orientation: landscape) {
+  .screen {
+    align-items: flex-start;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 12px 16px calc(12px + var(--safe-b));
+  }
+  .panel { margin: auto; }
+  .logo { font-size: clamp(18px, 4.4vh, 34px); }
+  .menu { gap: 6px; }
+  .btn { padding: 10px 16px; }
+}
+
+@media (max-height: 460px) and (orientation: landscape) {
+  .place { font-size: 28px; }
+  .speedo__value { font-size: 34px; }
+  .touch__btn { width: 58px; height: 58px; }
+  .touch__btn--gas { height: 74px; }
+
+  /* Clear of the pads rather than underneath them: the condition bar was
+     running straight through the steering buttons and the speed readout was
+     behind GAS. */
+  .hud__corner--bl { bottom: calc(96px + var(--safe-b)); }
+  .hud__corner--br { bottom: calc(166px + var(--safe-b)); }
 }

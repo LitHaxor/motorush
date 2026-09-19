@@ -133,7 +133,7 @@
           <div class="menu">
             <label class="field">
               <span class="field__label">RIDER NAME</span>
-              <input id="rider-name" class="field__input" maxlength="12" value="YOU" autocomplete="off" spellcheck="false" />
+              <input id="rider-name" class="field__input" maxlength="12" placeholder="PICK A NAME" autocomplete="off" spellcheck="false" />
             </label>
 
             <div class="field">
@@ -146,6 +146,17 @@
             </div>
 
             <button class="btn btn--primary" id="btn-start">TWIST THE THROTTLE</button>
+            <div class="menu__online" id="menu-online" hidden>
+              <button class="btn btn--ghost" id="btn-quick">QUICK MATCH</button>
+              <button class="btn btn--ghost" id="btn-create">CREATE ROOM</button>
+              <div class="joinrow">
+                <input id="room-code" class="field__input field__input--code" maxlength="4"
+                       placeholder="CODE" autocomplete="off" spellcheck="false"
+                       aria-label="Room code" />
+                <button class="btn btn--ghost" id="btn-join">JOIN</button>
+              </div>
+              <p class="menu__note" id="online-note" role="status"></p>
+            </div>
             <button class="btn btn--ghost" id="btn-controls">CONTROLS</button>
           </div>
 
@@ -166,6 +177,23 @@
       </section>
 
       <!-- Pause -->
+      <section class="screen screen--lobby art art--splash" id="screen-lobby" hidden>
+        <div class="panel panel--lobby">
+          <h1 class="lobby__title">ROOM</h1>
+          <p class="lobby__code">
+            <span class="lobby__code-label">CODE</span>
+            <strong id="lobby-code">----</strong>
+          </p>
+          <p class="lobby__hint" id="lobby-hint">Read the code out to a friend.</p>
+
+          <ol class="grid-list" id="lobby-grid"></ol>
+
+          <p class="lobby__clock" id="lobby-status">WAITING</p>
+          <button class="btn btn--primary" id="btn-launch">START RACE</button>
+          <button class="btn btn--ghost" id="btn-leave-room">LEAVE</button>
+        </div>
+      </section>
+
       <section class="screen screen--pause" id="screen-pause" hidden>
         <div class="panel">
           <h2 class="panel__title">PAUSED</h2>

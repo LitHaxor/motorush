@@ -5,7 +5,7 @@ import type { DifficultyKey } from './types';
 
 export const TRACK = {
   /** Distance to the finish line, in metres. */
-  raceDistance: 5200,
+  raceDistance: 11500,
   /** Extra track generated past the finish so the world does not end abruptly. */
   runout: 600,
   /** Half the drivable asphalt width, in metres. */
@@ -156,6 +156,55 @@ export const CRASH = {
   hustleBonus: 0.9,
 };
 
+/**
+ * How a city street is laid out, measured outward from the tarmac edge.
+ *
+ * These used to be three independent numbers in three files - the pavement in
+ * roadmesh, the buildings in scenery, the walkers in pedestrians - and they
+ * had drifted apart: the pavement stopped 2.45m short of the buildings so a
+ * strip of parkland grass ran through every city, and the people strolling
+ * along it were placed past the building line, standing inside the walls.
+ */
+export const CITY = {
+  /** Pavement runs from the kerb out to meet the building line exactly. */
+  pavementWidth: 8,
+  /** Nearest building face. Same number, so the two always meet. */
+  buildingSetback: 8,
+  /** Buildings stagger back from the line by up to this much. */
+  buildingJitter: 3,
+  /**
+   * Where people on foot walk: outside the barrier at 4.5, inside the
+   * buildings at 8, so they are neither in the road nor in a wall.
+   */
+  walkway: [5, 7.4] as [number, number],
+  /**
+   * Pavement along the island edge of a divided city street.
+   *
+   * Where the road splits, each carriageway is treated as a street in its own
+   * right: kerb and pavement on both sides, with a block of buildings down the
+   * middle instead of a strip of lawn. Narrower than the outer pavement so the
+   * island still has room for something to stand on.
+   */
+  islandPavement: 2.6,
+  /** An island narrower than this is just a kerb, not a city block. */
+  islandMinHalfWidth: 4,
+};
+
+/**
+ * The little hop you get from running somebody over.
+ *
+ * Split across two files - pedestrians.ts applies the kick, physics.ts brings
+ * the bike back down - so the numbers live here where both can see them.
+ */
+export const HOP = {
+  /** Upward kick in m/s at full speed. */
+  launch: 3.4,
+  /** The speed that earns all of it; slower hits scale down from here. */
+  launchAt: 55,
+  /** Brings the bike back down, m/s². */
+  gravity: 19,
+};
+
 export const TRAFFIC = {
   // Road Rash traffic is sparse - an occasional car to dodge, not a jam.
   // Density is what makes the road readable at 250 km/h.
@@ -226,9 +275,9 @@ export interface DifficultyPreset {
 }
 
 export const DIFFICULTY: Record<DifficultyKey, DifficultyPreset> = {
-  easy: { label: 'ROOKIE', rivalSkill: 0.9, traffic: 0.65, aggression: 0.6, distance: 3800, police: 1.4 },
-  normal: { label: 'RASHER', rivalSkill: 1.0, traffic: 0.9, aggression: 1.0, distance: 5200, police: 1.8 },
-  hard: { label: 'OUTLAW', rivalSkill: 1.02, traffic: 1.05, aggression: 1.4, distance: 6600, police: 2.0 },
+  easy: { label: 'ROOKIE', rivalSkill: 0.9, traffic: 0.65, aggression: 0.6, distance: 10000, police: 1.4 },
+  normal: { label: 'RASHER', rivalSkill: 1.0, traffic: 0.9, aggression: 1.0, distance: 11500, police: 1.8 },
+  hard: { label: 'OUTLAW', rivalSkill: 1.02, traffic: 1.05, aggression: 1.4, distance: 13000, police: 2.0 },
 };
 
 export const POLICE = {
@@ -236,8 +285,11 @@ export const POLICE = {
   /** Speed (m/s) above which you start attracting attention. */
   speedThreshold: 55,
   // Heat builds slowly: a patrol should be an event you dread a couple of
-  // times a race, not a permanent escort.
-  speedHeat: 1.7,
+  // times a race, not a permanent escort. Heat accrues per second, so this is
+  // tied to race duration: when distances went to 10-13km the races roughly
+  // doubled in length and 1.7 pushed Outlaw down to a 38%% finish rate. 1.0
+  // restores the intended curve at the longer distance.
+  speedHeat: 1.0,
   hitHeat: 7,
   crashHeat: 5,
   copHitHeat: 20,
