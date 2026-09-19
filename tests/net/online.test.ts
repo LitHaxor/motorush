@@ -317,3 +317,109 @@ describe('leaving', () => {
     expect(host.inputs(1000).has(FIRST_SEAT - 1)).toBe(false);
   });
 });
+
+describe('knowing the link is alive', () => {
+  it('answers a ping, so both ends can time the round trip', async () => {
+    await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    await waitFor(linked('host', 'guest'));
+
+    guest.tick(0);
+    await waitFor(() => board.link('host', 'guest')!.sent.some((m) => m.includes('"t":"pong"')));
+  });
+
+  it('measures a round trip between two clocks that share no origin', async () => {
+    // The pair that started this: one browser open for minutes and the other
+    // for days, with a rider on the other side of the world. Neither clock
+    // means anything to the other, so the trip is measured, never assumed.
+    await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    await waitFor(linked('host', 'guest'));
+
+    guest.tick(0);
+    await waitFor(() => guest.ping(5000) !== null);
+    expect(guest.ping(5000)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('pings on a timer rather than on every frame', async () => {
+    await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    await waitFor(linked('guest', 'host'));
+
+    const link = board.link('guest', 'host')!;
+    const before = link.sent.length;
+    for (let t = 0; t < 500; t += 16) guest.tick(t);
+    expect(link.sent.length - before).toBeLessThanOrEqual(1);
+  });
+
+  it('reports a guest that has heard nothing as lost, not as fine', async () => {
+    await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    // Nothing has been broadcast, so however healthy the link looks, this
+    // guest has no race to draw - which is the state that used to freeze it.
+    expect(guest.snapshotAgeMs(10_000)).toBe(Infinity);
+    expect(guest.quality(10_000)).toBe('lost');
+  });
+});
+
+describe('punches from another browser', () => {
+  /** Drain repeatedly without losing what was drained. */
+  const collect = async (race: OnlineRace) => {
+    const seen: Array<{ id: number; dir: -1 | 1 }> = [];
+    await waitFor(() => {
+      seen.push(...race.attacks());
+      return seen.length > 0;
+    });
+    return seen;
+  };
+
+  it('hands the host one swing per press', async () => {
+    // A guest's punch used to travel as a flag on the input frame that
+    // nothing on the host ever read, so the punch buttons did nothing at all
+    // in an online race.
+    const host = await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    await waitFor(linked('host', 'guest'));
+
+    expect(guest.sendInput({ ...INPUT, attackRight: true }, 0)).toBe(true);
+    const seen = await collect(host);
+    expect(seen[0]).toEqual({ id: guest.seat, dir: 1 });
+  });
+
+  it('knows which side was thrown', async () => {
+    const host = await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    await waitFor(linked('host', 'guest'));
+
+    guest.sendInput({ ...INPUT, attackLeft: true }, 0);
+    const seen = await collect(host);
+    expect(seen[0]!.dir).toBe(-1);
+  });
+
+  it('drains them, so one press cannot swing twice', async () => {
+    const host = await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    await waitFor(linked('host', 'guest'));
+
+    guest.sendInput({ ...INPUT, attackRight: true }, 0);
+    await collect(host);
+    expect(host.attacks()).toEqual([]);
+  });
+
+  it('tells a guest whether its frame actually went out', async () => {
+    await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    await waitFor(linked('guest', 'host'));
+
+    expect(guest.sendInput(INPUT, 0)).toBe(true);
+    // Input is rate limited, so the very next frame is not sent - which is
+    // precisely why a punch has to wait for one that is.
+    expect(guest.sendInput(INPUT, 1)).toBe(false);
+  });
+
+  it('never queues a swing on the guest side', async () => {
+    await online('host', 'HOST');
+    const guest = await online('guest', 'GUEST');
+    expect(guest.attacks()).toEqual([]);
+  });
+});

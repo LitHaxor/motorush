@@ -799,3 +799,36 @@ describe('World: your input rides your own bike', () => {
     expect(w.chased).toBe(w.racers[6]);
   });
 });
+
+describe('punches thrown from another browser', () => {
+  it('swings the bike it names rather than ours', () => {
+    // A guest's punch used to be dropped on the floor: it travelled as a flag
+    // on the input frame and nothing on the host ever read it.
+    const w = new World({ seed: 9 });
+    w.state = 'racing';
+    const rival = w.rivals[0];
+    expect(w.requestAttackFor(rival.id, 1)).toBe(true);
+    expect(rival.attackTimer).toBeGreaterThan(0);
+    expect(w.player.attackTimer).toBe(0);
+  });
+
+  it('respects the cooldown, so one press cannot become a flurry', () => {
+    const w = new World({ seed: 9 });
+    w.state = 'racing';
+    const rival = w.rivals[0];
+    expect(w.requestAttackFor(rival.id, 1)).toBe(true);
+    expect(w.requestAttackFor(rival.id, 1)).toBe(false);
+  });
+
+  it('ignores a rider who is not on this grid', () => {
+    const w = new World({ seed: 9 });
+    w.state = 'racing';
+    expect(w.requestAttackFor(999, 1)).toBe(false);
+  });
+
+  it('does not let anyone swing before the flag drops', () => {
+    const w = new World({ seed: 9 });
+    expect(w.state).toBe('countdown');
+    expect(w.requestAttackFor(w.rivals[0].id, 1)).toBe(false);
+  });
+});

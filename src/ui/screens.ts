@@ -11,7 +11,25 @@ import {
 } from './ridername';
 
 export type ScreenName =
-  | 'loading' | 'splash' | 'lobby' | 'pause' | 'busted' | 'wasted' | 'finish';
+  | 'loading' | 'splash' | 'lobby' | 'pause' | 'link' | 'busted' | 'wasted' | 'finish';
+
+/**
+ * Why the connection screen is up.
+ *
+ * `recovering` is hopeful and times out. The rest are settled, and differ
+ * only in what we can honestly tell the player about what happened - which
+ * is worth the extra words, because "the owner left" and "we have no idea"
+ * call for different things from the person reading them.
+ */
+export type LinkTrouble = 'recovering' | 'host-left' | 'lost' | 'stuck';
+
+export interface LinkView {
+  kind: LinkTrouble;
+  /** 1 at the start of the recovery window, 0 when it has run out. */
+  progress?: number;
+  /** Round trip when we last had one, for the "it was this bad" line. */
+  pingMs?: number | null;
+}
 
 /** One row of the grid on the lobby screen. */
 export interface LobbyRider {
@@ -43,6 +61,8 @@ export interface ScreenCallbacks {
   onLaunch(): void;
   onLeaveRoom(): void;
   onResume(): void;
+  /** Give up on the link and finish the race against bots. */
+  onContinueOffline(): void;
   onRestart(): void;
   onQuit(): void;
 }
@@ -58,9 +78,50 @@ const SCREEN_IDS: Record<ScreenName, string> = {
   splash: 'screen-splash',
   lobby: 'screen-lobby',
   pause: 'screen-pause',
+  link: 'screen-link',
   busted: 'screen-busted',
   wasted: 'screen-wasted',
   finish: 'screen-finish',
+};
+
+/** Only touch the DOM when the text actually changed. */
+function setText(el: HTMLElement, text: string): void {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+/**
+ * What each kind of trouble says.
+ *
+ * Plain about what is happening and what it means for the race, because the
+ * one thing worse than losing the connection is not being told you have.
+ */
+const LINK_COPY: Record<LinkTrouble, { title: string; blurb: string; action: string }> = {
+  recovering: {
+    title: 'RECONNECTING',
+    blurb: 'Lost the host. You are riding on your own machine while we try to get it back.',
+    action: 'RACE THE BOTS INSTEAD',
+  },
+  'host-left': {
+    title: 'THE OWNER LEFT',
+    blurb: 'Whoever opened the room closed it. The race can carry on against bots.',
+    action: 'FINISH THE RACE',
+  },
+  lost: {
+    title: 'CONNECTION LOST',
+    blurb: 'The host stopped answering. Nothing is coming back, so this race is yours alone now.',
+    action: 'FINISH THE RACE',
+  },
+  /**
+   * The catch-all, and the one that must never be reachable by sitting there
+   * doing nothing. If the race stops advancing for any reason at all - a
+   * reason this code has not thought of - the watchdog puts this up, because
+   * a panel with two working buttons beats a frozen picture every time.
+   */
+  stuck: {
+    title: 'THE RACE STOPPED',
+    blurb: 'Something jammed and the road stopped moving. Nothing you did caused it.',
+    action: 'RESTART THE RACE',
+  },
 };
 
 /** Build one <div><dt>LABEL</dt><dd>value</dd></div> stat tile. */
@@ -82,6 +143,7 @@ export class Screens {
     this.wireSplash();
     this.wireLobby();
     this.wirePause();
+    this.wireLink();
     this.wireVerdicts();
     detectArt();
   }
@@ -161,12 +223,20 @@ export class Screens {
    * button that is not there and no way to tell why. Unavailable means
    * visibly unavailable, with a reason.
    */
+  /**
+   * Show the online doors.
+   *
+   * They are never disabled, even before sign-in has landed or after it has
+   * failed. A dead button tells the player nothing and leaves them nothing to
+   * do; a live one lets them ask again, and asking again is what triggers
+   * another attempt. The note underneath carries the bad news instead.
+   */
   enableOnline(available: boolean, reason = ''): void {
     $('menu-online').hidden = false;
     for (const id of ['btn-quick', 'btn-create', 'btn-join']) {
-      $<HTMLButtonElement>(id).disabled = !available;
+      $<HTMLButtonElement>(id).disabled = false;
     }
-    $<HTMLInputElement>('room-code').disabled = !available;
+    $<HTMLInputElement>('room-code').disabled = false;
     this.setOnlineNote(available ? '' : reason);
   }
 
@@ -222,6 +292,42 @@ export class Screens {
     $('btn-resume').addEventListener('click', () => this.callbacks.onResume());
     $('btn-restart-pause').addEventListener('click', () => this.callbacks.onRestart());
     $('btn-quit').addEventListener('click', () => this.callbacks.onQuit());
+  }
+
+  private wireLink(): void {
+    $('btn-link-continue').addEventListener('click', () => this.callbacks.onContinueOffline());
+    $('btn-link-quit').addEventListener('click', () => this.callbacks.onQuit());
+  }
+
+  /**
+   * Put the connection screen up, or refresh the one already there.
+   *
+   * Called every frame while the trouble lasts, so it only writes what has
+   * actually changed - reassigning identical text each frame would restart
+   * the meter's transition and make it stutter.
+   */
+  showLink(view: LinkView): void {
+    const copy = LINK_COPY[view.kind];
+    setText($('link-title'), copy.title);
+    setText($('link-blurb'), copy.blurb);
+    setText($<HTMLButtonElement>('btn-link-continue'), copy.action);
+
+    const meter = $('link-fill').parentElement as HTMLElement;
+    const recovering = view.kind === 'recovering';
+    meter.hidden = !recovering;
+    if (recovering) {
+      const left = Math.max(0, Math.min(1, view.progress ?? 1));
+      $('link-fill').style.width = `${left * 100}%`;
+    }
+
+    // The last good round trip, when there was one: it turns "it broke" into
+    // "it was already struggling", which is usually the true story.
+    setText(
+      $('link-detail'),
+      view.pingMs == null ? '' : `LAST PING ${Math.round(view.pingMs)} ms`,
+    );
+
+    if (this.current !== 'link') this.show('link');
   }
 
   private wireVerdicts(): void {

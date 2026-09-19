@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { World } from '../../src/sim/world';
 import {
   SnapshotBuffer, applyCars, applyRacers, captureCars, captureRacers, lerpCars, lerpRacers,
+  reconcileLocalRacer,
 } from '../../src/net/snapshot';
 import type { CarSnapshot, RacerSnapshot, StateMessage } from '../../src/net/protocol';
 
@@ -12,7 +13,7 @@ const car = (id: number, over: Partial<CarSnapshot> = {}): CarSnapshot => ({
 
 const racer = (id: number, over: Partial<RacerSnapshot> = {}): RacerSnapshot => ({
   id, s: 0, lateral: 0, speed: 0, lean: 0, health: 100, hop: 0,
-  state: 'ride', riderPhase: 'standing', attackDir: 0, place: 1, ...over,
+  state: 'ride', riderPhase: 'standing', attackDir: 0, attackTimer: 0, place: 1, ...over,
 });
 
 const frame = (seq: number, time: number, racers: RacerSnapshot[], cars: CarSnapshot[] = []): StateMessage =>
@@ -209,5 +210,182 @@ describe('traffic over the wire', () => {
     b.push(frame(1, 10.0, [racer(1)], [car(9, { s: 0 })]), 1000);
     b.push(frame(2, 10.1, [racer(1)], [car(9, { s: 20 })]), 1100);
     expect(b.sample(1150)?.cars[0].s).toBeCloseTo(10, 5);
+  });
+});
+
+
+describe('riding our own bike and correcting it', () => {
+  it('leaves our own rider out when asked, so prediction survives a frame', () => {
+    // The bug this exists for: a guest was overwritten with the host's copy
+    // of itself sixty times a second, so a button press could not move the
+    // bike - only ask for it to be moved, a round trip ago.
+    const w = new World({ seed: 4 });
+    w.localRacer = w.player;
+    w.player.s = 120;
+    applyRacers(w.racers, [racer(w.player.id, { s: 500 }), racer(w.rivals[0].id, { s: 700 })], w.player.id);
+    expect(w.player.s).toBe(120);
+    expect(w.rivals[0].s).toBe(700);
+  });
+
+  it('closes a small disagreement gradually rather than snatching the bike', () => {
+    const w = new World({ seed: 4 });
+    w.player.s = 100;
+    reconcileLocalRacer(w.player, racer(w.player.id, { s: 102, state: 'ride' }), 1 / 60);
+    expect(w.player.s).toBeGreaterThan(100);
+    expect(w.player.s).toBeLessThan(101);
+  });
+
+  it('converges on the host over a handful of frames', () => {
+    const w = new World({ seed: 4 });
+    w.player.s = 100;
+    for (let i = 0; i < 60; i++) {
+      reconcileLocalRacer(w.player, racer(w.player.id, { s: 103, state: 'ride' }), 1 / 60);
+    }
+    expect(w.player.s).toBeCloseTo(103, 1);
+  });
+
+  it('corrects at the same rate whatever the frame rate', () => {
+    const slow = new World({ seed: 4 });
+    const fast = new World({ seed: 4 });
+    slow.player.s = 100;
+    fast.player.s = 100;
+    // A tenth of a second, taken in three steps or in twelve.
+    for (let i = 0; i < 3; i++) reconcileLocalRacer(slow.player, racer(slow.player.id, { s: 104 }), 1 / 30);
+    for (let i = 0; i < 12; i++) reconcileLocalRacer(fast.player, racer(fast.player.id, { s: 104 }), 1 / 120);
+    expect(fast.player.s).toBeCloseTo(slow.player.s, 2);
+  });
+
+  it('snaps when the disagreement is too big to be lag', () => {
+    const w = new World({ seed: 4 });
+    w.player.s = 100;
+    reconcileLocalRacer(w.player, racer(w.player.id, { s: 400, speed: 30 }), 1 / 60);
+    expect(w.player.s).toBe(400);
+    expect(w.player.speed).toBe(30);
+  });
+
+  it('takes the host\'s word on damage, which is not ours to predict', () => {
+    const w = new World({ seed: 4 });
+    w.player.health = 100;
+    reconcileLocalRacer(w.player, racer(w.player.id, { health: 40 }), 1 / 60);
+    expect(w.player.health).toBe(40);
+  });
+
+  it('puts us on the floor where the host says, not where we guessed', () => {
+    const w = new World({ seed: 4 });
+    w.player.s = 100;
+    reconcileLocalRacer(w.player, racer(w.player.id, { s: 101, state: 'down', riderPhase: 'tumble' }), 1 / 60);
+    expect(w.player.state).toBe('down');
+    expect(w.player.s).toBe(101);
+  });
+
+  it('snaps back onto the bike where the host says we remounted', () => {
+    const w = new World({ seed: 4 });
+    w.player.state = 'down';
+    w.player.s = 100;
+    reconcileLocalRacer(w.player, racer(w.player.id, { s: 140, state: 'ride' }), 1 / 60);
+    expect(w.player.s).toBe(140);
+  });
+});
+
+describe('how far behind the host to draw', () => {
+  it('starts at the floor, which is what a clean link deserves', () => {
+    const b = new SnapshotBuffer(0.1);
+    expect(b.delay).toBe(0.1);
+  });
+
+  it('says how stale the newest frame is', () => {
+    const b = new SnapshotBuffer();
+    expect(b.ageMs(1000)).toBe(Infinity);
+    b.push(frame(1, 0, [racer(0)]), 1000);
+    expect(b.ageMs(1050)).toBe(50);
+  });
+
+  it('stays at the floor while frames arrive on time', () => {
+    const b = new SnapshotBuffer(0.1);
+    for (let i = 0; i < 40; i++) b.push(frame(i, i * 0.05, [racer(0)]), i * 50);
+    expect(b.delay).toBeCloseTo(0.1, 2);
+  });
+
+  it('gives itself more room when frames arrive in bursts', () => {
+    // The Dhaka case: the average is fine, the spacing is not, and a buffer
+    // sized for the average runs dry every time a frame is late.
+    const b = new SnapshotBuffer(0.1);
+    let at = 0;
+    for (let i = 0; i < 40; i++) {
+      at += i % 2 === 0 ? 10 : 180; // same average, wildly uneven
+      b.push(frame(i, i * 0.05, [racer(0)]), at);
+    }
+    expect(b.delay).toBeGreaterThan(0.12);
+  });
+
+  it('never buries the controls under more than its ceiling', () => {
+    const b = new SnapshotBuffer(0.1, 12, 0.35);
+    let at = 0;
+    for (let i = 0; i < 60; i++) {
+      at += i % 2 === 0 ? 5 : 2000; // catastrophic
+      b.push(frame(i, i * 0.05, [racer(0)]), at);
+    }
+    expect(b.delay).toBeLessThanOrEqual(0.35);
+  });
+
+  it('comes back down once the link settles', () => {
+    const b = new SnapshotBuffer(0.1);
+    let at = 0;
+    for (let i = 0; i < 20; i++) {
+      at += i % 2 === 0 ? 10 : 180;
+      b.push(frame(i, i * 0.05, [racer(0)]), at);
+    }
+    const rough = b.delay;
+    for (let i = 20; i < 400; i++) {
+      at += 50;
+      b.push(frame(i, i * 0.05, [racer(0)]), at);
+    }
+    expect(b.delay).toBeLessThan(rough);
+  });
+});
+
+
+describe('seeing the punches', () => {
+  it('carries a swing to the guest, so a fight is visible rather than inferred', () => {
+    // Without this a guest saw no punches at all: health dropped, riders fell
+    // over, and nothing on screen explained why.
+    const w = new World({ seed: 4 });
+    w.rivals[0].attackTimer = 0.3;
+    w.rivals[0].attackDir = 1;
+    const shot = captureRacers([w.rivals[0]])[0];
+    expect(shot.attackTimer).toBeCloseTo(0.3, 2);
+
+    const other = new World({ seed: 4 });
+    applyRacers(other.racers, [shot]);
+    const mirrored = other.racers.find((r) => r.id === w.rivals[0].id)!;
+    expect(mirrored.attackTimer).toBeCloseTo(0.3, 2);
+  });
+
+  it('runs a swing down smoothly between frames', () => {
+    const blended = lerpRacers(
+      [racer(1, { attackTimer: 0.4 })],
+      [racer(1, { attackTimer: 0.2 })],
+      0.5,
+    );
+    expect(blended[0]!.attackTimer).toBeCloseTo(0.3, 5);
+  });
+
+  it('does not start a swing early', () => {
+    // A swing that appears in the newer frame has not started yet at the
+    // point we are drawing, and showing an arm out before the punch reads as
+    // a rider flailing at nothing.
+    const blended = lerpRacers(
+      [racer(1, { attackTimer: 0 })],
+      [racer(1, { attackTimer: 0.45 })],
+      0.5,
+    );
+    expect(blended[0]!.attackTimer).toBe(0);
+  });
+
+  it('leaves our own swing alone, because we threw it ourselves', () => {
+    const w = new World({ seed: 4 });
+    w.player.attackTimer = 0.35;
+    reconcileLocalRacer(w.player, racer(w.player.id, { attackTimer: 0, state: 'ride' }), 1 / 60);
+    expect(w.player.attackTimer).toBe(0.35);
   });
 });

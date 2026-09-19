@@ -9,7 +9,7 @@ const STATE: StateMessage = {
   countdown: 0,
   racers: [{
     id: 3, s: 100, lateral: -1.5, speed: 40, lean: 0.2, health: 80, hop: 0,
-    state: 'ride', riderPhase: 'standing', attackDir: 1, place: 2,
+    state: 'ride', riderPhase: 'standing', attackDir: 1, attackTimer: 0.24, place: 2,
   }],
   cars: [{
     id: 5, s: 300, lateral: 1.2, speed: 22, dir: 1, brake: 0, swerve: 0.2,
@@ -18,7 +18,7 @@ const STATE: StateMessage = {
   peds: [[9, 120, 14.2, 0, 0]],
   cops: [{
     id: 900, s: 80, lateral: 2, speed: 45, lean: 0, health: 100, hop: 0,
-    state: 'ride', riderPhase: 'standing', attackDir: 0, place: 8,
+    state: 'ride', riderPhase: 'standing', attackDir: 0, attackTimer: 0, place: 8,
   }],
 };
 
@@ -149,5 +149,30 @@ describe('inputs are clamped, not merely parsed', () => {
       t: 'input', seq: 1, input: { attackLeft: 'yes', attackRight: 1 },
     }));
     expect(out).toMatchObject({ input: { attackLeft: false, attackRight: false } });
+  });
+});
+
+describe('heartbeats', () => {
+  it('carries a ping there and back', () => {
+    const ping = decode(encode({ t: 'ping', id: 7, at: 1234.5 }));
+    expect(ping).toEqual({ t: 'ping', id: 7, at: 1234.5 });
+  });
+
+  it('carries both of the replier\'s timestamps, which is what makes it clock-free', () => {
+    // These are on the peer's clock and are only ever used as a difference
+    // against each other, so a peer six hours ahead measures the same as one
+    // in the next room.
+    const pong = decode(encode({ t: 'pong', id: 7, recv: 21_600_000, send: 21_600_020 }));
+    expect(pong).toEqual({ t: 'pong', id: 7, recv: 21_600_000, send: 21_600_020 });
+  });
+
+  it('refuses a ping with nothing to answer', () => {
+    const ping = decode('{"t":"ping"}');
+    expect(ping).toMatchObject({ t: 'ping', id: -1 });
+  });
+
+  it('does not choke on timestamps that are not numbers', () => {
+    const pong = decode('{"t":"pong","id":3,"recv":"soon","send":null}');
+    expect(pong).toEqual({ t: 'pong', id: 3, recv: 0, send: 0 });
   });
 });

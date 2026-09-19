@@ -55,8 +55,18 @@ export default defineConfig({
       // opening rooms on production during a test would both pollute it and
       // fail the moment the network hiccups. A `demo-` project id keeps the
       // emulator fully offline.
+      //
+      // The pkill is not paranoia. The database emulator is a Java child
+      // process that routinely outlives the CLI that started it - an
+      // interrupted run leaves it holding port 9000 while auth, which is what
+      // the health check below looks at, is gone. Every later run then fails
+      // to start with "port taken" and no test can be run at all until
+      // somebody finds the stray process by hand. This only ever runs when
+      // the health check has already said no usable emulator is up, so a
+      // healthy one is reused rather than killed.
       command:
-        'npx firebase emulators:start --only database,auth --project demo-motorush',
+        'pkill -f firebase-database-emulator; pkill -f "firebase emulators:start"; '
+        + 'npx firebase emulators:start --only database,auth --project demo-motorush',
       url: 'http://127.0.0.1:9099/',
       reuseExistingServer: true,
       timeout: 120_000,

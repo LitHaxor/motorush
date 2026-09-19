@@ -14,6 +14,7 @@ import {
 } from './lobby';
 import { type PeerLink, openPeerLink } from './peer';
 import { INPUT_HZ, SNAPSHOT_HZ, type StateMessage, decode, encode } from './protocol';
+import { LinkHealth, type LinkQuality } from './health';
 import { SnapshotBuffer, captureCars, capturePeds, captureRacers } from './snapshot';
 import type { Pedestrian } from '../sim/pedestrians';
 import type { Car, Racer } from '../sim/types';
@@ -27,6 +28,9 @@ import type { NetSession } from './session';
  * in a straight line, their input goes stale and the AI picks the bike up.
  */
 const INPUT_TTL_MS = 1000;
+
+/** Punches held for a host that is not currently draining them. */
+const MAX_HELD_ATTACKS = 16;
 
 /**
  * Which seats a human is currently riding, and what they are holding.
@@ -121,12 +125,37 @@ export interface OnlineRace {
   inputs(nowMs: number): ReadonlyMap<number, Readonly<RacerInput>>;
   /** Host only: push the world out. Rate-limits itself; call it every frame. */
   broadcast(snapshot: BroadcastSource, nowMs: number): void;
-  /** Guest only: send what we are holding. Rate-limits itself. */
-  sendInput(input: RacerInput, nowMs: number): void;
+  /**
+   * Guest only: send what we are holding. Rate-limits itself.
+   *
+   * Returns whether the frame actually went, because a punch is a one-shot
+   * event riding along with it - the caller has to know whether to keep
+   * holding onto it or let it go.
+   */
+  sendInput(input: RacerInput, nowMs: number): boolean;
   /** Guest only: the grid as it should be drawn. */
   sample(nowMs: number): StateMessage | null;
   /** Guest only: snapshots held for interpolation. Zero means nothing is arriving. */
   buffered(): number;
+  /**
+   * Keepalive. Call every frame, racing or not: it is what measures the round
+   * trip and what notices a link that has quietly stopped carrying anything.
+   */
+  tick(nowMs: number): void;
+  /** Smoothed round trip to the host, or to the slowest guest. Null until measured. */
+  ping(nowMs: number): number | null;
+  /** One word for the state of the link this browser depends on. */
+  quality(nowMs: number): LinkQuality;
+  /** Guest only: how long since a snapshot landed. Infinity before the first. */
+  snapshotAgeMs(nowMs: number): number;
+  /**
+   * Host only: punches thrown by remote riders since the last call.
+   *
+   * Drained rather than held, because a swing is an event and the input map is
+   * a level - leaving the flag set would have the host swinging again every
+   * time the cooldown expired, off one press.
+   */
+  attacks(): Array<{ id: number; dir: -1 | 1 }>;
   /**
    * Host only: stop accepting new riders.
    *
@@ -187,6 +216,8 @@ export async function goOnline(
   const buffer = new SnapshotBuffer(2 / SNAPSHOT_HZ);
   const snapshotTicker = Ticker.atHz(SNAPSHOT_HZ);
   const inputTicker = Ticker.atHz(INPUT_HZ);
+  const health = new Map<string, LinkHealth>();
+  const pendingAttacks: Array<{ id: number; dir: -1 | 1 }> = [];
   let seats: Seat[] = [];
   let seq = 0;
   let lobbyClosed = false;
@@ -195,21 +226,54 @@ export async function goOnline(
 
   const linkTo = (peerUid: string, offerer: boolean): PeerLink => {
     const link = openLink({ db, lobbyId: handle.id, selfUid: uid, peerUid, offerer });
+    const state = new LinkHealth();
+    health.set(peerUid, state);
     link.onMessage((raw) => {
+      const at = now();
       const message = decode(raw);
       if (!message) return;
+      // Anything at all is proof of life, and a snapshot is far better
+      // evidence than a pong because there are twenty a second of them.
+      state.heard(at);
+
+      if (message.t === 'ping') {
+        // Answered the instant it lands, and both of our timestamps ride back
+        // so the far end can subtract our handling out of its measurement.
+        link.send(encode({ t: 'pong', id: message.id, recv: at, send: now() }));
+        return;
+      }
+      if (message.t === 'pong') {
+        state.onPong(message.id, message.recv, message.send, at);
+        return;
+      }
       if (message.t === 'input' && handle.isHost) {
         const seat = seatOfUid.get(peerUid);
-        if (seat !== undefined) tracker.set(seat, message.input, now());
-      } else if (message.t === 'state' && !handle.isHost) {
-        buffer.push(message, now());
+        if (seat === undefined) return;
+        tracker.set(seat, message.input, at);
+        // A punch is an event, not a held key. Queue it once, here, where
+        // each input frame is seen exactly once.
+        if (message.input.attackLeft) pendingAttacks.push({ id: seat, dir: -1 });
+        if (message.input.attackRight) pendingAttacks.push({ id: seat, dir: 1 });
+        // Drained every frame by a racing host. If nothing is draining them -
+        // the host is between races, say - they must not pile up into a
+        // flurry that all lands at once when one does.
+        if (pendingAttacks.length > MAX_HELD_ATTACKS) {
+          pendingAttacks.splice(0, pendingAttacks.length - MAX_HELD_ATTACKS);
+        }
+        return;
+      }
+      if (message.t === 'state' && !handle.isHost) {
+        buffer.push(message, at);
       }
     });
-    link.onStateChange((state) => {
-      if (state === 'closed' || state === 'failed') {
+    link.onStateChange((next) => {
+      if (next === 'closed' || next === 'failed') {
         const seat = seatOfUid.get(peerUid);
         // Their bike does not stop; the AI simply takes it over.
         if (seat !== undefined) tracker.drop(seat);
+        // Measurements from a dead link would otherwise sit on the HUD
+        // looking healthy for as long as the room stays open.
+        state.reset();
       }
     });
     return link;
@@ -296,14 +360,71 @@ export async function goOnline(
     },
 
     sendInput(input, nowMs) {
-      if (handle.isHost) return;
-      if (!inputTicker.due(nowMs)) return;
-      links.get(handle.host)?.send(encode({ t: 'input', seq: ++seq, input }));
+      if (handle.isHost) return false;
+      if (!inputTicker.due(nowMs)) return false;
+      const link = links.get(handle.host);
+      if (!link) return false;
+      link.send(encode({ t: 'input', seq: ++seq, input }));
+      return true;
     },
 
     sample: (nowMs) => (handle.isHost ? null : buffer.sample(nowMs)),
 
     buffered: () => (handle.isHost ? 0 : buffer.size),
+
+    tick(nowMs) {
+      // Both ends ping, so both ends have their own measurement rather than
+      // one side having to be told what the other thinks.
+      for (const [peerUid, link] of links) {
+        const state = health.get(peerUid);
+        if (!state) continue;
+        const id = state.pingDue(nowMs);
+        if (id !== null) link.send(encode({ t: 'ping', id, at: nowMs }));
+      }
+    },
+
+    ping(nowMs) {
+      if (!handle.isHost) return health.get(handle.host)?.rttMs ?? null;
+      // The host is only as good as its worst rider, which is the number
+      // worth showing: it is the one that decides whether anyone is suffering.
+      let worst: number | null = null;
+      for (const state of health.values()) {
+        if (state.quality(nowMs) === 'lost') continue;
+        const rtt = state.rttMs;
+        if (rtt !== null && (worst === null || rtt > worst)) worst = rtt;
+      }
+      return worst;
+    },
+
+    quality(nowMs) {
+      if (!handle.isHost) {
+        const state = health.get(handle.host);
+        if (!state) return 'lost';
+        // A link still carrying snapshots is working, whatever the pongs say:
+        // a dropped heartbeat matters far less than a stream that stopped.
+        if (buffer.ageMs(nowMs) < 500) {
+          const q = state.quality(nowMs);
+          return q === 'lost' ? 'poor' : q;
+        }
+        return state.quality(nowMs);
+      }
+      // A host never depends on anyone, so its own race is never at risk -
+      // report the worst rider so the HUD can say who is struggling.
+      let worst: LinkQuality = 'good';
+      const rank: Record<LinkQuality, number> = { good: 0, fair: 1, poor: 2, lost: 3 };
+      for (const state of health.values()) {
+        const q = state.quality(nowMs);
+        if (rank[q] > rank[worst]) worst = q;
+      }
+      return links.size === 0 ? 'good' : worst;
+    },
+
+    snapshotAgeMs: (nowMs) => (handle.isHost ? 0 : buffer.ageMs(nowMs)),
+
+    attacks() {
+      if (!handle.isHost || pendingAttacks.length === 0) return [];
+      return pendingAttacks.splice(0, pendingAttacks.length);
+    },
 
     async closeLobby() {
       if (!handle.isHost || lobbyClosed) return;
@@ -315,6 +436,8 @@ export async function goOnline(
       stopWatching();
       for (const link of links.values()) link.close();
       links.clear();
+      health.clear();
+      pendingAttacks.length = 0;
       tracker.clear();
       await leave(db, handle).catch(() => {});
     },

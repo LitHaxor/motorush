@@ -38,6 +38,17 @@ async function wipeRooms(request: APIRequestContext): Promise<void> {
   });
 }
 
+/**
+ * Riders opened by the current test, so they can be shut afterwards.
+ *
+ * They do not close themselves. Each one is a full software-GL WebGL race
+ * that keeps running after its test ends, and three of those left spinning in
+ * the background starve the next test badly enough that its renderer never
+ * finishes booting at all - which shows up as an unrelated timeout two tests
+ * later.
+ */
+const riders: Page[] = [];
+
 /** A browser all of its own, so each rider signs in as a different person. */
 async function openRider(browser: Browser, name: string): Promise<Page> {
   // A fresh context per rider is the whole trick: Firebase persists anonymous
@@ -51,9 +62,17 @@ async function openRider(browser: Browser, name: string): Promise<Page> {
   await page.waitForFunction(() => window.motorush?.mode() === 'menu', null, {
     timeout: BOOT_TIMEOUT,
   });
-  // Wait for anonymous sign-in to land, which is what reveals the online buttons.
+  // The online doors appear whether or not sign-in has landed yet, and are
+  // never disabled: pressing one signs in if it has to, so a rider that got
+  // here first simply waits a moment longer on the loading screen.
   await expect(page.locator('#menu-online')).toBeVisible({ timeout: 60_000 });
+  // Never bolted shut, whatever the state of the connection: a dead button
+  // leaves a player with nothing to try, and pressing one is what starts the
+  // next attempt at signing in.
+  await expect(page.locator('#btn-quick')).toBeEnabled();
+  await expect(page.locator('#btn-join')).toBeEnabled();
   await page.fill('#rider-name', name);
+  riders.push(page);
   return page;
 }
 
@@ -88,6 +107,14 @@ test.describe('an online match', () => {
 
   test.beforeEach(async ({ request }) => {
     await wipeRooms(request);
+  });
+
+  test.afterEach(async () => {
+    // Shut every rider down, whatever the test did or did not get to. A page
+    // closed by the test itself - the host that vanishes - is already gone,
+    // so failures here are expected and ignored.
+    await Promise.all(riders.map((page) => page.context().close().catch(() => {})));
+    riders.length = 0;
   });
 
   test('three riders join three different ways and race together', async ({ browser }) => {
@@ -202,6 +229,59 @@ test.describe('an online match', () => {
         return h.cars.every((car) => Math.abs((byId.get(car.id) ?? 1e9) - car.s) < 12);
       }, { timeout: 30_000 })
       .toBe(true);
+  });
+
+  test('a guest whose host vanishes is never left stuck', async ({ browser }) => {
+    // The failure this whole recovery path exists for. A guest draws the
+    // host's world, so when the host went away mid-race the last snapshot was
+    // re-applied for ever: the bike sat pinned in the road, every control was
+    // dead, and there was no button anywhere that could get out of it.
+    const host = await openRider(browser, 'HOST');
+    const guest = await openRider(browser, 'GUEST');
+
+    await host.click('#btn-quick');
+    await inLobby(host);
+    await guest.click('#btn-quick');
+    await inLobby(guest);
+    await host.click('#btn-launch');
+    await Promise.all([racing(host), racing(guest)]);
+
+    // Wait until the guest really is being driven by the host, so what
+    // follows is a loss rather than a connection that never worked.
+    await guest.waitForFunction(() => (window.motorush!.online()?.buffered ?? 0) > 0, null, {
+      timeout: 30_000,
+    });
+
+    // The host does not say goodbye - it simply stops existing, which is what
+    // a closed tab, a dead battery or a walk into a lift actually looks like.
+    await host.context().close();
+
+    // A way out appears, whatever the guest decides to do with it.
+    await expect(guest.locator('#screen-link')).toBeVisible({ timeout: 30_000 });
+    await expect(guest.locator('#btn-link-continue')).toBeEnabled();
+
+    // And taking it puts them back into a running race rather than at the menu.
+    const clockBefore = await guest.evaluate(() => window.motorush!.world()!.elapsed);
+    await guest.click('#btn-link-continue');
+    await expect(guest.locator('#screen-link')).toBeHidden();
+    expect(await guest.evaluate(() => window.motorush!.mode())).toBe('racing');
+
+    // The race clock moving is the proof the loop is running again rather
+    // than being held still behind a panel. It only starts once the lights go
+    // out, so this also covers a host that vanished during the countdown.
+    await expect
+      .poll(() => guest.evaluate(() => window.motorush!.world()!.elapsed), { timeout: 30_000 })
+      .toBeGreaterThan(clockBefore + 1);
+
+    // And the controls answer, which is the half that was actually broken:
+    // hold the throttle and the bike goes. Without a hand on it the bike is
+    // quite right to sit there, so the test has to provide one.
+    await guest.keyboard.down('KeyW');
+    const distanceBefore = await guest.evaluate(() => window.motorush!.world()!.localRacer.s);
+    await expect
+      .poll(() => guest.evaluate(() => window.motorush!.world()!.localRacer.s), { timeout: 30_000 })
+      .toBeGreaterThan(distanceBefore + 1);
+    await guest.keyboard.up('KeyW');
   });
 
   test('a wrong code is refused without leaving the menu', async ({ browser }) => {

@@ -99,3 +99,21 @@ describe('typing into a field beats driving', () => {
     expect(input.sample().throttle).toBe(0);
   });
 });
+
+describe('punches waiting to be thrown', () => {
+  it('does not bank an unlimited flurry while nothing is draining them', () => {
+    // Attacks are only drained by a running race. A thumb on the punch button
+    // in a lobby, or behind a reconnect panel, used to build a queue that all
+    // went off at once when the race came back.
+    const input = new InputManager(fakeWindow() as unknown as Window);
+    for (let i = 0; i < 50; i++) input.queueAttack(1);
+    expect(input.consumeAttacks().length).toBeLessThanOrEqual(4);
+  });
+
+  it('still keeps the most recent presses rather than the oldest', () => {
+    const input = new InputManager(fakeWindow() as unknown as Window);
+    for (let i = 0; i < 10; i++) input.queueAttack(-1);
+    input.queueAttack(1);
+    expect(input.consumeAttacks().at(-1)).toBe(1);
+  });
+});

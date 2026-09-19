@@ -36,11 +36,43 @@ export class Hud {
   private readonly toasts = $('hud-toasts');
   private readonly flash = $('hud-flash');
   private readonly touchControls = $('touch-controls');
+  /** Lives outside the HUD so it survives the HUD being hidden. */
+  private readonly pauseButton = document.getElementById('btn-pause');
+  private readonly net = $('hud-net');
+  private readonly netDot = $('hud-net-dot');
+  private readonly netText = $('hud-net-text');
 
   private flashTimer = 0;
 
   setVisible(visible: boolean): void {
     this.root.hidden = !visible;
+    // Nothing to pause unless a race is on.
+    if (this.pauseButton) this.pauseButton.hidden = !visible;
+  }
+
+  /**
+   * The connection badge.
+   *
+   * `null` is an offline race: no link, so no opinion. Otherwise the round
+   * trip, or what is wrong with it - and `local` marks the stretch where the
+   * guest is riding on its own simulation because nothing is arriving.
+   */
+  setLink(status: { quality: 'good' | 'fair' | 'poor' | 'lost'; pingMs: number | null; local: boolean } | null): void {
+    if (!status) {
+      this.net.hidden = true;
+      return;
+    }
+    this.net.hidden = false;
+    for (const q of ['good', 'fair', 'poor', 'lost'] as const) {
+      this.net.classList.toggle(`is-${q}`, status.quality === q);
+    }
+    const text = status.local
+      ? 'LOCAL CONTROL'
+      : status.pingMs == null
+        ? 'LINKING'
+        : `${Math.round(status.pingMs)} ms`;
+    if (this.netText.textContent !== text) this.netText.textContent = text;
+    this.netDot.title = status.local ? 'Riding locally while the host is quiet' : text;
   }
 
   /** Wire the on-screen controls. Only shown when the device reports touch. */
@@ -49,15 +81,31 @@ export class Hud {
     if (!isTouch) return;
     this.touchControls.hidden = false;
 
+    // What is under a thumb right now.
+    //
+    // Held as a set rather than written straight through, because the two
+    // steering buttons share one axis: pressing right while still holding
+    // left, then letting go of right, used to send the steering to centre
+    // even though left was never released. On a phone, where a thumb rolls
+    // from one button to the next, that reads as the controls dying
+    // mid-corner.
+    const held = new Set<string>();
+    const applySteer = () => {
+      const steer = (held.has('right') ? 1 : 0) - (held.has('left') ? 1 : 0);
+      input.setTouch({ steer });
+    };
+
     const buttons = this.touchControls.querySelectorAll<HTMLButtonElement>('[data-touch]');
     for (const btn of buttons) {
       const action = btn.dataset.touch as string;
       const press = (down: boolean) => (e: Event) => {
         e.preventDefault();
+        if (down) held.add(action);
+        else held.delete(action);
         btn.classList.toggle('is-down', down);
         switch (action) {
-          case 'left': input.setTouch({ steer: down ? -1 : 0 }); break;
-          case 'right': input.setTouch({ steer: down ? 1 : 0 }); break;
+          case 'left':
+          case 'right': applySteer(); break;
           case 'throttle': input.setTouch({ throttle: down ? 1 : 0 }); break;
           case 'brake': input.setTouch({ brake: down ? 1 : 0 }); break;
           case 'attack-left': if (down) input.queueAttack(-1 as AttackSide); break;
@@ -88,6 +136,10 @@ export class Hud {
       });
       btn.addEventListener('pointerup', press(false));
       btn.addEventListener('pointercancel', press(false));
+      // A pointer that ends up somewhere else - an alert, a tab switch, a
+      // gesture the browser claimed - never sends pointerup here, and the
+      // button would stay stuck on.
+      btn.addEventListener('lostpointercapture', press(false));
       btn.addEventListener('contextmenu', (e) => e.preventDefault());
     }
   }

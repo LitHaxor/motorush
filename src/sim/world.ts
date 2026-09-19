@@ -411,6 +411,21 @@ export class World implements AiWorldView {
   }
 
   /**
+   * Host only: a punch thrown by somebody else's browser.
+   *
+   * A swing is an event, not a held control, so it cannot ride in the input
+   * map the way throttle and steering do - a held flag would start a fresh
+   * swing every time the cooldown expired, off a single press. The host is
+   * handed each press once and turns it into exactly one swing here.
+   */
+  requestAttackFor(racerId: number, dir: number): boolean {
+    if (this.state !== 'racing') return false;
+    const racer = this.field.find((r) => r.id === racerId);
+    if (!racer || !canAttack(racer)) return false;
+    return startAttack(racer, dir);
+  }
+
+  /**
    * Advance the world one fixed step.
    *
    * `remoteInputs` drives named racers from outside the sim, keyed by

@@ -67,6 +67,7 @@ export class InputManager {
       if (KEYMAP.attackLeft.includes(e.code as never)) this.pendingAttacks.push(-1);
       else if (KEYMAP.attackRight.includes(e.code as never)) this.pendingAttacks.push(1);
       else if (KEYMAP.attackAuto.includes(e.code as never)) this.pendingAttacks.push(0);
+      this.capAttacks();
       this.onAnyKey?.();
     }
     // Arrows and space scroll the page otherwise.
@@ -119,6 +120,21 @@ export class InputManager {
 
   queueAttack(side: AttackSide): void {
     this.pendingAttacks.push(side);
+    this.capAttacks();
+  }
+
+  /**
+   * Presses are only drained while a race is running.
+   *
+   * Nothing drains them in the menus, in a lobby, or while a connection panel
+   * is up - so without a cap, a bored thumb on the punch button would build a
+   * queue that all went off at once the moment the race resumed.
+   */
+  private capAttacks(): void {
+    const MAX = 4;
+    if (this.pendingAttacks.length > MAX) {
+      this.pendingAttacks.splice(0, this.pendingAttacks.length - MAX);
+    }
   }
 
   /** Drain queued attacks. Call once per frame. */
@@ -147,7 +163,10 @@ export class InputManager {
     const edges: [number, AttackSide][] = [[4, -1], [5, 1], [2, -1], [1, 1]];
     for (const [index, side] of edges) {
       const pressed = pad.buttons[index]?.pressed ?? false;
-      if (pressed && !this.prevGamepadButtons[index]) this.pendingAttacks.push(side);
+      if (pressed && !this.prevGamepadButtons[index]) {
+        this.pendingAttacks.push(side);
+        this.capAttacks();
+      }
       this.prevGamepadButtons[index] = pressed;
     }
   }

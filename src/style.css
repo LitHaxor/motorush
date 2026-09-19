@@ -67,6 +67,14 @@ button { font-family: inherit; cursor: pointer; }
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
 }
 .mute:hover { border-color: var(--hot); }
+.mute[hidden] { display: none; }
+/* Sits under the mute button, same size and column. Touch targets are big
+   enough to hit at speed, and tap-highlight off so it does not flash grey. */
+.mute--pause {
+  top: calc(60px + var(--safe-t));
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
 
 /* ============================== HUD ============================== */
 .hud { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
@@ -200,6 +208,26 @@ button { font-family: inherit; cursor: pointer; }
 }
 .damage-flash.is-hit { opacity: 1; transition: opacity 0.06s; }
 
+/* --- link status --- */
+/* A quiet badge, not an alarm: on a healthy link it is a dot and a number. */
+.netstat {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; letter-spacing: 0.08em; color: var(--muted);
+}
+.netstat[hidden] { display: none; }
+.netstat__dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #37d67a; flex: 0 0 auto;
+}
+.netstat.is-fair .netstat__dot { background: #e2c044; }
+.netstat.is-poor .netstat__dot { background: var(--hot); }
+.netstat.is-lost .netstat__dot { background: #ff3b30; animation: netpulse 1s infinite; }
+.netstat.is-lost .netstat__text { color: #ff6a60; }
+@keyframes netpulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .netstat.is-lost .netstat__dot { animation: none; }
+}
+
 /* --- touch --- */
 /* Above the HUD, below the menus. Without a z-index this sat underneath the
    .screens layer, which covers the whole viewport - so every tap on the
@@ -239,6 +267,20 @@ button { font-family: inherit; cursor: pointer; }
 .touch__btn--gas { background: rgba(37,211,102,0.28); font-size: 13px; height: 84px; }
 .touch__btn--brake { font-size: 11px; }
 .touch__btn--punch { font-size: 22px; }
+
+/* The reconnect meter: how much of the recovery window is left before the
+   race is called unrecoverable. */
+.link__meter {
+  width: 100%; height: 6px; border-radius: 3px;
+  background: rgba(255,255,255,0.12); overflow: hidden; margin: 4px 0 2px;
+}
+.link__fill {
+  height: 100%; width: 100%;
+  background: linear-gradient(90deg, var(--hot), #e2c044);
+  transition: width 0.2s linear;
+}
+.link__detail { opacity: 0.75; }
+.screen--link .link__meter[hidden] { display: none; }
 
 /* ============================ screens ============================ */
 /* The container spans the viewport permanently, so it must not take input -
@@ -660,10 +702,11 @@ button { font-family: inherit; cursor: pointer; }
   .timer { font-size: 15px; }
 
   /* Keep the heat and distance readouts clear of the place counter and of the
-     mute button, and let them wrap rather than overlap. */
+     buttons, and let them wrap rather than overlap. Mute and pause stack in
+     that corner, so this clears both rather than just the one. */
   .hud__corner--tr {
     right: calc(14px + var(--safe-r));
-    top: calc(64px + var(--safe-t));
+    top: calc(112px + var(--safe-t));
     max-width: 52vw;
   }
 
@@ -701,6 +744,12 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 @media (max-height: 460px) and (orientation: landscape) {
+  /* No vertical room to stack: put pause beside mute rather than below it. */
+  .mute--pause {
+    top: calc(12px + var(--safe-t));
+    right: calc(60px + var(--safe-r));
+  }
+
   .place { font-size: 28px; }
   .speedo__value { font-size: 34px; }
   .touch__btn { width: 58px; height: 58px; }

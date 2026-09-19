@@ -8,13 +8,13 @@ import { GameView } from './render/view';
 import { GameAudio } from './audio/audio';
 import { InputManager, type AttackSide } from './input/input';
 import { Hud } from './ui/hud';
-import { Screens, type StartOptions } from './ui/screens';
+import { Screens, type LinkTrouble, type StartOptions } from './ui/screens';
 import { isRiding } from './sim/racer';
 import { type NetSession, connect, readConfig } from './net/session';
 import { type JoinMode, type OnlineRace, goOnline } from './net/online';
 import { GRID_SLOTS } from './net/lobby';
 import { RIVALS } from './sim/config';
-import { applyCars, applyPeds, applyRacers } from './net/snapshot';
+import { applyCars, applyPeds, applyRacers, reconcileLocalRacer } from './net/snapshot';
 import type { DifficultyKey, RacerInput, SimEvent } from './sim/types';
 
 /** Simulation runs at a fixed rate; rendering runs as fast as the display. */
@@ -24,6 +24,68 @@ const MAX_SUBSTEPS = 5;
 const NEUTRAL: RacerInput = {
   throttle: 0, brake: 0, steer: 0, attackLeft: false, attackRight: false,
 };
+
+/**
+ * Auto-recovery, in three stages.
+ *
+ * A guest draws the host's world, so when the host goes quiet the guest used
+ * to freeze mid-race with the controls apparently dead - there was no stage
+ * two. There is now, and it is deliberately generous, because most silences
+ * are a lift, a tunnel or a phone switching to another mast, and they end.
+ *
+ * 1. Under HOLD, nothing is said. This is ordinary jitter on a long link and
+ *    the interpolation buffer is there precisely to cover it.
+ * 2. Past HOLD, the guest stops waiting and rides its own simulation - the
+ *    bike answers the controls immediately, the bots take the other bikes
+ *    back, and the HUD says LOCAL CONTROL. If the host comes back, its frames
+ *    are blended in and nobody had to do anything.
+ * 3. Past PATIENCE, the race is very probably not coming back, so it is time
+ *    to say so and offer the way out rather than pretending.
+ */
+const GUEST_HOLD_MS = 600;
+const GUEST_PATIENCE_MS = 3000;
+/** How long the reconnect screen keeps hoping before calling it lost. */
+const GUEST_GIVE_UP_MS = 12000;
+
+/**
+ * The backstop.
+ *
+ * Everything above handles a silence we understand. This handles the ones we
+ * do not: if the race stops advancing at all - for any reason, including one
+ * that has not been thought of here - say so and put two working buttons on
+ * screen. Being stuck with no way out is the worst thing this game can do to
+ * somebody, and it is not allowed to depend on having diagnosed the cause.
+ */
+const WATCHDOG_MS = 4000;
+
+/** The least time between two announcements about the link. */
+const LINK_TOAST_GAP_MS = 6000;
+
+/** How many times sign-in retries itself in the background before resting. */
+const SIGN_IN_TRIES = 5;
+
+const OFFLINE_NOTE = 'Could not reach the server. Try again, or race the bots.';
+
+/**
+ * How long any one step of getting online may take before we give up on it.
+ *
+ * Not a nicety. A request to a database on a phone that has just lost signal
+ * can hang rather than fail, and the loading screen carries no buttons - so
+ * without this the player sits watching a spinner with nothing to press,
+ * which is the same dead end as a frozen race by another route.
+ */
+const ONLINE_STEP_TIMEOUT_MS = 15_000;
+
+/** Resolve to null rather than hanging for ever. */
+function withTimeout<T>(work: Promise<T>, ms = ONLINE_STEP_TIMEOUT_MS): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(null), ms);
+    void work.then(
+      (value) => { window.clearTimeout(timer); resolve(value); },
+      () => { window.clearTimeout(timer); resolve(null); },
+    );
+  });
+}
 
 /**
  * Online is on by default.
@@ -79,6 +141,10 @@ export interface MotorushApi {
   ready(): boolean;
   /** What this browser's online session looks like, or null if racing offline. */
   online(): OnlineStatus | null;
+  /** This frame's merged input, so a test can see what a touch button did. */
+  input(): RacerInput;
+  /** Why the connection screen is up, if it is. Null when all is well. */
+  link(): LinkTrouble | null;
   /** Dev builds only: the renderer, for profiling draw load from the console. */
   view?(): GameView | null;
 }
@@ -104,7 +170,30 @@ class Game {
   private lastInput: RacerInput;
   private options: StartOptions = { riderName: 'YOU', difficulty: 'normal' };
   private netSession: NetSession | null = null;
+  /** The sign-in currently in flight, so two callers never race each other. */
+  private signInAttempt: Promise<NetSession | null> | null = null;
   private online: OnlineRace | null = null;
+  /**
+   * Punches thrown but not yet sent.
+   *
+   * Input frames go out thirty times a second and the screen draws sixty, so
+   * a punch pressed on an unsent frame would simply vanish. It waits here
+   * until a frame actually leaves.
+   */
+  private pendingSwings: AttackSide[] = [];
+  /** Set while a guest is riding its own simulation because the host is quiet. */
+  private localControl = false;
+  /** When the link last got a word in edgeways, so it cannot nag. */
+  private lastLinkToastMs = 0;
+  /** Set once the player has chosen to finish the race without the room. */
+  private wentSolo = false;
+  /** Why the connection screen is up, or null when it is not. */
+  private linkTrouble: LinkTrouble | null = null;
+  /** Watchdog: how far the race had got, and when we last saw it move. */
+  private lastProgress = 0;
+  private lastProgressAtMs = 0;
+  /** Frames that threw, one after another. A few is a blip; a stream is a jam. */
+  private frameFaults = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.world = new World({ seed: Game.newSeed(), difficulty: 'normal' });
@@ -117,6 +206,7 @@ class Game {
       onResume: () => this.resume(),
       onRestart: () => void this.startRace(this.options),
       onQuit: () => this.quitToMenu(),
+      onContinueOffline: () => this.continueOffline(),
     });
 
     // Unlock audio on the very first interaction, whatever it is. Waiting for
@@ -141,6 +231,8 @@ class Game {
     this.input.onMute = () => this.toggleMute();
 
     document.getElementById('btn-mute')?.addEventListener('click', () => this.toggleMute());
+    // The only way out of a race on a phone: there is no Escape key to press.
+    document.getElementById('btn-pause')?.addEventListener('click', () => this.togglePause());
     window.addEventListener('resize', () => this.view?.resize());
     document.addEventListener('visibilitychange', () => {
       if (document.hidden && this.mode === 'racing') this.pause();
@@ -167,18 +259,53 @@ class Game {
     this.lastFrame = performance.now();
     this.rafId = requestAnimationFrame(this.frame);
 
-    // Sign in while the player is still reading the menu. Failure is fine:
-    // no session simply means every race is against bots, offline.
+    // Sign in while the player is still reading the menu. Failure is not
+    // final: the doors open either way and the next attempt is made when
+    // somebody reaches for one, or on the retry below.
     if (onlineRequested()) {
-      this.netSession = await connect(
-        readConfig(import.meta.env as unknown as Record<string, unknown>),
-        emulatorRequested(),
-      );
-      this.screens.enableOnline(
-        this.netSession !== null,
-        'Online is unavailable right now. Races here are against bots.',
-      );
+      const session = await this.signIn();
+      this.screens.enableOnline(session !== null, OFFLINE_NOTE);
+      if (!session) this.retrySignIn();
     }
+  }
+
+  /**
+   * Get a signed-in session, making one if we do not have it.
+   *
+   * Sign-in is a network call on a phone that may have been in a lift when
+   * the page loaded, so "it failed once" must never harden into "online is
+   * off until you reload". Concurrent callers share the one attempt.
+   */
+  private async signIn(): Promise<NetSession | null> {
+    if (this.netSession) return this.netSession;
+    this.signInAttempt ??= connect(
+      readConfig(import.meta.env as unknown as Record<string, unknown>),
+      emulatorRequested(),
+    ).finally(() => {
+      this.signInAttempt = null;
+    });
+    this.netSession = await this.signInAttempt;
+    return this.netSession;
+  }
+
+  /**
+   * Keep trying quietly in the background, backing off as it goes.
+   *
+   * The player is not told about any of this - they are reading the menu.
+   * They are told when it works, by the warning under the buttons going away.
+   */
+  private retrySignIn(attempt = 1): void {
+    if (this.netSession || attempt > SIGN_IN_TRIES) return;
+    const waitMs = Math.min(30_000, 2000 * 2 ** (attempt - 1));
+    window.setTimeout(() => {
+      void this.signIn().then((session) => {
+        if (session) {
+          this.screens.enableOnline(true);
+          return;
+        }
+        this.retrySignIn(attempt + 1);
+      });
+    }, waitMs);
   }
 
   // ----------------------------------------------------------------- rooms
@@ -192,7 +319,6 @@ class Game {
     intent: 'quick' | 'create' | 'join',
     opts: StartOptions & { code?: string },
   ): Promise<void> {
-    if (!this.netSession) return;
     this.options = { riderName: opts.riderName, difficulty: opts.difficulty };
 
     // Audio has to be kicked off from a user gesture; this is that moment.
@@ -200,6 +326,19 @@ class Game {
     this.screens.setOnlineNote('');
     this.screens.show('loading');
     this.screens.setLoadingText(intent === 'join' ? 'FINDING ROOM' : 'OPENING ROOM');
+
+    // Pressing the button is itself another go at signing in. Being told "no"
+    // once while the page was loading is not a reason to refuse for ever, and
+    // a button that silently does nothing is the worst of both.
+    if (!this.netSession) this.screens.setLoadingText('CONNECTING');
+    const session = await withTimeout(this.signIn());
+    if (!session) {
+      this.screens.show('splash');
+      this.screens.enableOnline(false, OFFLINE_NOTE);
+      this.retrySignIn();
+      return;
+    }
+    this.screens.enableOnline(true);
 
     await this.online?.close().catch(() => {});
     this.online = null;
@@ -209,13 +348,20 @@ class Game {
       : intent === 'join' ? { kind: 'code', code: opts.code ?? '' }
       : { kind: 'quick' };
 
-    const online = await goOnline(this.netSession, opts.riderName, { mode });
+    const askedAt = performance.now();
+    const online = await withTimeout(goOnline(session, opts.riderName, { mode }));
     if (!online) {
+      // "Nobody is there" and "we never heard back" are different problems
+      // and want different things from the player, so they are not told the
+      // same thing. The doors stay open either way.
+      const timedOut = performance.now() - askedAt >= ONLINE_STEP_TIMEOUT_MS;
       this.screens.show('splash');
       this.screens.setOnlineNote(
-        intent === 'join'
-          ? 'No room with that code, or it is full.'
-          : 'Could not reach the server. Race offline instead.',
+        timedOut
+          ? 'The server did not answer. Try again, or race the bots.'
+          : intent === 'join'
+            ? 'No room with that code, or it is full.'
+            : 'Could not reach the server. Race offline instead.',
       );
       return;
     }
@@ -224,7 +370,15 @@ class Game {
     this.mode = 'lobby';
     online.onRoom((room) => {
       if (!room) {
-        // The owner closed the tab and took the room with them.
+        // The owner closed the tab and took the room with them. Mid-race that
+        // is not a reason to throw the race away - the world is already being
+        // simulated here, so it can simply carry on against bots.
+        if (this.mode === 'racing' || this.mode === 'paused') {
+          this.linkTrouble = 'host-left';
+          this.setLocalControl(true);
+          this.screens.showLink({ kind: 'host-left', pingMs: this.online?.ping(performance.now()) ?? null });
+          return;
+        }
         void this.leaveRoom('The room owner left.');
         return;
       }
@@ -359,6 +513,13 @@ class Game {
 
     this.accumulator = 0;
     this.lastFrame = performance.now();
+    this.pendingSwings.length = 0;
+    this.localControl = false;
+    this.lastProgress = 0;
+    this.lastProgressAtMs = 0;
+    this.frameFaults = 0;
+    this.wentSolo = false;
+    this.linkTrouble = null;
     this.mode = 'racing';
     this.screens.hideAll();
     this.hud.setVisible(true);
@@ -376,6 +537,53 @@ class Game {
       driven: [...online.inputs(nowMs).keys()].sort(),
       buffered: online.buffered(),
     };
+  }
+
+  /**
+   * Has the race actually moved since last time?
+   *
+   * `elapsed - countdown` rises through both phases - the countdown ticks
+   * down before the flag and the clock counts up after it - so one number
+   * covers the whole race. If it has not moved in four seconds while we are
+   * supposedly racing, the race is stuck, whatever the reason.
+   */
+  private checkProgress(nowMs: number): void {
+    if (this.mode !== 'racing' || this.linkTrouble) {
+      this.lastProgressAtMs = nowMs;
+      return;
+    }
+    const progress = this.world.elapsed - this.world.countdown;
+    if (Math.abs(progress - this.lastProgress) > 1e-6) {
+      this.lastProgress = progress;
+      this.lastProgressAtMs = nowMs;
+      return;
+    }
+    if (this.lastProgressAtMs === 0) {
+      this.lastProgressAtMs = nowMs;
+      return;
+    }
+    if (nowMs - this.lastProgressAtMs > WATCHDOG_MS) this.reportStuck();
+  }
+
+  /** Put the way out on screen. Deliberately the last word, never the first. */
+  private reportStuck(): void {
+    if (this.linkTrouble === 'stuck') return;
+    this.linkTrouble = 'stuck';
+    this.screens.showLink({ kind: 'stuck', pingMs: null });
+  }
+
+  /** Keep the HUD's connection badge in step with the link. */
+  private updateLinkBadge(nowMs: number): void {
+    const online = this.online;
+    if (!online || this.mode !== 'racing') {
+      this.hud.setLink(null);
+      return;
+    }
+    this.hud.setLink({
+      quality: online.quality(nowMs),
+      pingMs: online.ping(nowMs),
+      local: this.localControl,
+    });
   }
 
   private togglePause(): void {
@@ -400,6 +608,9 @@ class Game {
   quitToMenu(): void {
     void this.online?.close().catch(() => {});
     this.online = null;
+    this.linkTrouble = null;
+    this.localControl = false;
+    this.hud.setLink(null);
     this.mode = 'menu';
     this.hud.setVisible(false);
     this.hud.clearTransient();
@@ -421,19 +632,37 @@ class Game {
     const input = this.input.sample();
     this.lastInput = input;
 
-    if (this.mode === 'racing') {
-      this.stepSimulation(dt, input, now);
-    } else if (this.mode === 'menu' || this.mode === 'over') {
-      // Keep the scene alive behind the menus and end screens.
-      this.world.step(dt, { throttle: 0, brake: 0, steer: 0, attackLeft: false, attackRight: false });
+    // Heartbeats run whatever the game is doing, so a link is measured in the
+    // lobby as well as in a race and a silence is noticed the moment it starts.
+    this.online?.tick(now);
+    this.updateLinkBadge(now);
+
+    // A throw in here used to cost the whole session: the loop survives it,
+    // but if it throws every frame the picture simply stops and every control
+    // goes dead with no explanation. Now it is counted, and a jam is reported.
+    try {
+      if (this.mode === 'racing') {
+        this.stepSimulation(dt, input, now);
+      } else if (this.mode === 'menu' || this.mode === 'over') {
+        // Keep the scene alive behind the menus and end screens.
+        this.world.step(dt, { throttle: 0, brake: 0, steer: 0, attackLeft: false, attackRight: false });
+      }
+
+      if (this.mode !== 'paused') {
+        this.view?.render(dt, input);
+      }
+      if (this.mode === 'racing') {
+        this.hud.update(this.world, dt);
+      }
+      this.frameFaults = 0;
+    } catch (err) {
+      this.frameFaults++;
+      // Logged once rather than sixty times a second.
+      if (this.frameFaults === 1) console.error('[motorush] frame failed', err);
+      if (this.frameFaults > 30) this.reportStuck();
     }
 
-    if (this.mode !== 'paused') {
-      this.view?.render(dt, input);
-    }
-    if (this.mode === 'racing') {
-      this.hud.update(this.world, dt);
-    }
+    this.checkProgress(now);
 
     const cop = this.world.cop;
     const me = this.world.localRacer;
@@ -452,6 +681,12 @@ class Game {
     }
 
     this.queueAttacks();
+
+    // Punches thrown by the other browsers. Drained rather than held: one
+    // press is one swing, however many input frames carry the flag.
+    for (const swing of this.online?.attacks() ?? []) {
+      this.world.requestAttackFor(swing.id, swing.dir);
+    }
 
     // Offline this is empty, so the AI rides every bike exactly as before.
     const remote = this.online?.inputs(nowMs);
@@ -500,21 +735,75 @@ class Game {
    */
   private stepAsGuest(dt: number, input: RacerInput, nowMs: number): void {
     const online = this.online!;
-    online.sendInput(input, nowMs);
+
+    // Punches are events, so they travel as a flag on the next frame that
+    // actually goes out rather than being sampled and lost.
+    for (const side of this.input.consumeAttacks()) {
+      const dir = side === 0 ? this.nearestSide() : side;
+      this.pendingSwings.push(dir);
+      // Thrown here as well as sent. The host decides whether it lands - that
+      // is its job and ours to accept - but the arm has to move the moment
+      // the button is pressed, or a punch on a long link feels like a button
+      // that does not work. The swing is not taken back by a later frame,
+      // only the damage is.
+      this.world.requestAttack(dir);
+    }
+    // Both sides is the most that can travel on one frame, so anything beyond
+    // a couple is only a queue growing behind a link that is not carrying
+    // anything - and when it came back it would fire off a stored flurry.
+    if (this.pendingSwings.length > 2) this.pendingSwings.splice(0, this.pendingSwings.length - 2);
+    const sent = online.sendInput({
+      ...input,
+      attackLeft: this.pendingSwings.includes(-1),
+      attackRight: this.pendingSwings.includes(1),
+    }, nowMs);
+    if (sent) this.pendingSwings.length = 0;
+
+    // How long since the host last said anything. Infinity before the first
+    // frame, which is the case that matters most: a link that never opened.
+    const silentMs = online.snapshotAgeMs(nowMs);
+    const live = silentMs < GUEST_HOLD_MS;
+    this.setLocalControl(!live);
+
+    // A decision is on screen. Hold the world exactly where it is rather than
+    // riding on unsteered behind the panel - the controls are underneath it -
+    // while still listening, because the host may yet come back.
+    if (this.linkTrouble) {
+      this.accumulator = 0;
+      if (live) this.clearLinkTrouble();
+      else this.judgeLink(silentMs, nowMs);
+      return;
+    }
 
     this.accumulator += dt;
     let steps = 0;
+    const events: SimEvent[] = [];
     while (this.accumulator >= FIXED_DT && steps < MAX_SUBSTEPS) {
-      this.world.step(FIXED_DT, NEUTRAL);
+      // Our own bike is ridden here, on our own machine, whether or not the
+      // host is talking to us - that is what keeps the controls alive. When
+      // the host is quiet the AI picks up the other bikes too, so the race
+      // carries on instead of standing still.
+      events.push(...this.world.step(FIXED_DT, input));
       this.accumulator -= FIXED_DT;
       steps++;
     }
     if (steps === MAX_SUBSTEPS) this.accumulator = 0;
 
-    const frame = online.sample(nowMs);
-    if (!frame) return;
+    const frame = live ? online.sample(nowMs) : null;
+    if (!frame) {
+      // Nothing to correct against: the local sim is the race for now, so its
+      // own crashes and finishes have to count.
+      if (events.length) this.dispatch(events);
+      this.judgeLink(silentMs, nowMs);
+      return;
+    }
 
-    applyRacers(this.world.racers, frame.racers);
+    const mine = frame.racers.find((r) => r.id === this.world.localRacer.id);
+    // Everyone else is drawn exactly where the host says. Our own rider is
+    // predicted and corrected, so a press moves the bike now rather than in
+    // a round trip's time.
+    applyRacers(this.world.racers, frame.racers, this.world.localRacer.id);
+    if (mine) reconcileLocalRacer(this.world.localRacer, mine, dt);
     // Police are the host's business entirely; a guest just draws whichever
     // patrols it is told about.
     applyRacers(this.world.adoptCops(frame.cops.map((c) => c.id)), frame.cops);
@@ -532,6 +821,106 @@ class Game {
         this.showRemoteResult(frame.race);
       }
     }
+    this.judgeLink(silentMs, nowMs);
+  }
+
+  /**
+   * Flip between drawing the host's race and riding our own.
+   *
+   * Only the HUD needs telling: the switch itself is just which branch of the
+   * guest step runs. Announced because a rider who does not know they have
+   * gone local will not understand why the other bikes started behaving
+   * differently.
+   */
+  private setLocalControl(local: boolean): void {
+    if (local === this.localControl) return;
+    this.localControl = local;
+    if (this.mode !== 'racing') return;
+
+    // The badge changes instantly; the toast does not. A link that drops a
+    // burst of frames every few seconds would otherwise spend the whole race
+    // announcing itself, which is worse than the stutter it is reporting.
+    const now = performance.now();
+    if (now - this.lastLinkToastMs < LINK_TOAST_GAP_MS) return;
+    this.lastLinkToastMs = now;
+    this.hud.toast(
+      local ? 'HOST QUIET — RIDING LOCALLY' : 'BACK ONLINE',
+      local ? 'bad' : 'good',
+    );
+  }
+
+  /**
+   * Decide whether a silence is worth interrupting the race for.
+   *
+   * Kept apart from the stepping because it is a policy decision, not
+   * simulation: how long to wait, when to say something, and when to stop
+   * pretending it is coming back.
+   */
+  private judgeLink(silentMs: number, nowMs: number): void {
+    // Told to get on with it, or already at the results: nothing to decide.
+    if (this.wentSolo || this.mode !== 'racing') return;
+
+    if (silentMs < GUEST_PATIENCE_MS) {
+      // Recovered, or never actually broke.
+      if (this.linkTrouble === 'recovering') this.clearLinkTrouble();
+      return;
+    }
+    if (this.linkTrouble === 'host-left') return; // a fact, not a wait
+
+    // Past the give-up mark it is no longer honest to call this a wait.
+    this.linkTrouble = silentMs > GUEST_GIVE_UP_MS ? 'lost' : 'recovering';
+    this.screens.showLink({
+      kind: this.linkTrouble,
+      progress: 1 - (silentMs - GUEST_PATIENCE_MS) / (GUEST_GIVE_UP_MS - GUEST_PATIENCE_MS),
+      pingMs: this.online?.ping(nowMs) ?? null,
+    });
+  }
+
+  /** The host came back. Put the race back on screen where we left it. */
+  private clearLinkTrouble(): void {
+    if (!this.linkTrouble) return;
+    this.linkTrouble = null;
+    if (this.mode === 'racing') this.screens.hideAll();
+  }
+
+  /**
+   * Stop waiting for the room and finish the race here.
+   *
+   * The world is already running locally by this point - that is what the
+   * recovery does - so this only drops the link and takes the screen down.
+   * Deliberately NOT a restart: a rider eight kilometres into a race does not
+   * want to be sent back to the start line because somebody else's wifi died.
+   */
+  private continueOffline(): void {
+    // A jam is not a network problem, so carrying on where we stand would
+    // only carry on being jammed. Start the race again instead.
+    if (this.linkTrouble === 'stuck') {
+      this.linkTrouble = null;
+      this.frameFaults = 0;
+      this.lastProgressAtMs = 0;
+      void this.startRace(this.options);
+      return;
+    }
+    this.wentSolo = true;
+    this.linkTrouble = null;
+    this.localControl = false;
+    void this.online?.close().catch(() => {});
+    this.online = null;
+    this.hud.setLink(null);
+    if (this.mode === 'racing') {
+      this.screens.hideAll();
+      this.lastFrame = performance.now();
+      this.accumulator = 0;
+      return;
+    }
+    // Paused when the room went away: the panel replaced the pause screen, so
+    // put that back rather than throwing away a race they were part way
+    // through and had not asked to leave.
+    if (this.mode === 'paused') {
+      this.screens.show('pause');
+      return;
+    }
+    this.quitToMenu();
   }
 
   /** A guest's race ends when the host says it does. */
@@ -615,6 +1004,8 @@ class Game {
       pause: () => this.pause(),
       resume: () => this.resume(),
       ready: () => this.view !== null,
+      input: () => this.input.sample(),
+      link: () => this.linkTrouble,
       // Dev-only handle on the renderer, for profiling draw load from the
       // console. Stripped from production builds.
       ...(import.meta.env.DEV ? { view: () => this.view } : {}),

@@ -72,6 +72,14 @@ export interface RacerSnapshot {
   state: RacerState;
   riderPhase: RiderPhase;
   attackDir: -1 | 0 | 1;
+  /**
+   * How much of a swing is left, in seconds.
+   *
+   * Without it a guest saw no punches at all - not its rivals' and not its
+   * own. Fights were invisible: health simply dropped and riders fell over
+   * for no reason anybody could see. One number a rider a frame.
+   */
+  attackTimer: number;
   place: number;
 }
 
@@ -102,7 +110,41 @@ export interface InputMessage {
   input: RacerInput;
 }
 
-export type NetMessage = StateMessage | InputMessage;
+/**
+ * A heartbeat, sent both ways on a timer.
+ *
+ * Two jobs. It measures the round trip, which is what the interpolation delay
+ * is sized from, and it proves the link is still carrying traffic - a data
+ * channel reports itself open long after it has gone silent, so silence here
+ * is the only reliable signal that a rider has dropped off the network.
+ */
+export interface PingMessage {
+  t: 'ping';
+  /** Chosen by the sender; the reply carries it back untouched. */
+  id: number;
+  /** The sender's clock when it sent this, in milliseconds. */
+  at: number;
+}
+
+/**
+ * The reply, carrying both ends of the peer's handling of the ping.
+ *
+ * Both timestamps are on the *replier's* clock, which shares no origin with
+ * ours - performance.now() counts from page load, and a wall clock would
+ * differ by whole timezones. They are only ever used as a difference against
+ * each other, which is what makes the measurement clock-agnostic.
+ */
+export interface PongMessage {
+  t: 'pong';
+  /** The id from the ping being answered. */
+  id: number;
+  /** Their clock when the ping arrived. */
+  recv: number;
+  /** Their clock when this reply left. */
+  send: number;
+}
+
+export type NetMessage = StateMessage | InputMessage | PingMessage | PongMessage;
 
 const num = (v: unknown, fallback = 0): number =>
   typeof v === 'number' && Number.isFinite(v) ? v : fallback;
@@ -147,6 +189,7 @@ export function decode(raw: string): NetMessage | null {
           state: oneOf(r.state, RACER_STATES, 'ride'),
           riderPhase: oneOf(r.riderPhase, RIDER_PHASES, 'standing'),
           attackDir: dir(r.attackDir),
+          attackTimer: Math.max(0, num(r.attackTimer)),
           place: num(r.place, 1),
         }))
         // A racer with no id cannot be matched to anything on the grid.
@@ -199,6 +242,14 @@ export function decode(raw: string): NetMessage | null {
         attackRight: bool(i.attackRight),
       },
     };
+  }
+
+  if (m.t === 'ping') {
+    return { t: 'ping', id: num(m.id, -1), at: num(m.at) };
+  }
+
+  if (m.t === 'pong') {
+    return { t: 'pong', id: num(m.id, -1), recv: num(m.recv), send: num(m.send) };
   }
 
   return null;

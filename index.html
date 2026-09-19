@@ -19,6 +19,13 @@
       </div>
 
       <div class="hud__corner hud__corner--tr">
+        <!-- Only shown in an online race: round trip, and whether the host is
+             still talking to us. Silent on an offline race, where there is no
+             link to have an opinion about. -->
+        <div class="netstat" id="hud-net" hidden>
+          <span class="netstat__dot" id="hud-net-dot"></span>
+          <span class="netstat__text" id="hud-net-text">—</span>
+        </div>
         <div class="progress">
           <div class="progress__label"><span id="hud-distance">0.00</span> / <span id="hud-total">0.00</span> km</div>
           <div class="progress__track"><div class="progress__fill" id="hud-progress"></div></div>
@@ -203,6 +210,21 @@
         </div>
       </section>
 
+      <!--
+        Connection trouble. Three states share one screen because the buttons
+        are the same in all three: keep riding, or go back to the menu.
+      -->
+      <section class="screen screen--link" id="screen-link" hidden>
+        <div class="panel">
+          <h2 class="panel__title" id="link-title">RECONNECTING</h2>
+          <p class="hint" id="link-blurb">Holding your line locally.</p>
+          <div class="link__meter"><div class="link__fill" id="link-fill"></div></div>
+          <p class="hint link__detail" id="link-detail"></p>
+          <button class="btn btn--primary" id="btn-link-continue">KEEP RIDING OFFLINE</button>
+          <button class="btn btn--ghost" id="btn-link-quit">MAIN MENU</button>
+        </div>
+      </section>
+
       <!-- Busted -->
       <section class="screen screen--busted art art--busted" id="screen-busted" hidden>
         <div class="verdict">
@@ -245,6 +267,9 @@
     </div>
 
     <button class="mute" id="btn-mute" aria-label="Toggle sound">🔊</button>
+    <!-- Keyboard has Escape and P; a phone had nothing, so a race that went
+         wrong could not even be quit. -->
+    <button class="mute mute--pause" id="btn-pause" aria-label="Pause" hidden>⏸</button>
     <div class="grain" aria-hidden="true"></div>
     <div class="vignette" aria-hidden="true"></div>
 
