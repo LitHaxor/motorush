@@ -13,6 +13,7 @@
 import { TRACK } from './config';
 import { makeRng, clamp } from './mathx';
 import type { TrackSample } from './types';
+import { blendAt, type BiomeSegment } from './biomes';
 
 const TWO_PI = Math.PI * 2;
 
@@ -26,6 +27,21 @@ export interface TrackOptions {
   seed?: number;
   length?: number;
   step?: number;
+  /** Biome layout, so coast sections can be levelled to a sea. */
+  biomes?: readonly BiomeSegment[];
+  /**
+   * Generate divided sections and forks. Off gives a plain undivided road,
+   * which is what tests about handling rather than road layout want.
+   */
+  divided?: boolean;
+}
+
+/** A stretch of divided highway; a `fork` is wide enough to ride either side. */
+export interface DividedSection {
+  from: number;
+  to: number;
+  fork: boolean;
+  halfWidth: number;
 }
 
 /** Smooth 0..1 ramp used to keep the start straight so the grid is fair. */
@@ -47,18 +63,28 @@ export class Track {
   private readonly curveTerms: WaveTerm[];
   private readonly hillTerms: WaveTerm[];
 
+  /** Stretches where a median splits the carriageways. */
+  readonly divided: DividedSection[] = [];
+
   readonly xs: Float64Array;
   readonly ys: Float64Array;
   readonly zs: Float64Array;
   readonly headings: Float64Array;
   readonly curvatures: Float64Array;
 
+  /** Water surface height for each coast segment, keyed by its start. */
+  readonly seaLevels = new Map<number, number>();
+  private readonly biomes: readonly BiomeSegment[];
+
   constructor({
     seed = 1,
     length = TRACK.raceDistance + TRACK.runout,
     step = TRACK.sampleStep,
+    biomes = [],
+    divided = true,
   }: TrackOptions = {}) {
     const rng = makeRng(seed);
+    this.biomes = biomes;
     this.seed = seed;
     this.step = step;
     this.length = length;
@@ -75,6 +101,29 @@ export class Track {
       { amp: 6.0, wave: 230 + rng.range(-40, 40), phase: rng() * TWO_PI },
       { amp: 2.5, wave: 97 + rng.range(-20, 20), phase: rng() * TWO_PI },
     ];
+
+    // A sea has to be flat, so each coast section levels the road out and
+    // records the water height to sit below it.
+    for (const seg of biomes) {
+      if (seg.kind !== 'coast') continue;
+      const mid = (seg.from + seg.to) / 2;
+      this.seaLevels.set(seg.from, this.rawElevation(mid) - TRACK.coastDrop);
+    }
+
+    // Divided sections, spaced out along the track.
+    let ds = rng.range(500, 1100);
+    while (divided && ds < length - 400) {
+      const fork = rng.chance(TRACK.forkChance);
+      const range = fork ? TRACK.forkLength : TRACK.medianLength;
+      const segLength = rng.range(range[0], range[1]);
+      this.divided.push({
+        from: ds,
+        to: Math.min(length, ds + segLength),
+        fork,
+        halfWidth: fork ? TRACK.forkHalfWidth : TRACK.medianHalfWidth,
+      });
+      ds += segLength + rng.range(TRACK.medianGap[0], TRACK.medianGap[1]);
+    }
 
     const count = Math.ceil(length / step) + 2;
     this.count = count;
@@ -110,10 +159,24 @@ export class Track {
     return c * smoothstep((s - 40) / 200);
   }
 
-  elevation(s: number): number {
+  /** Elevation before any biome levelling. */
+  rawElevation(s: number): number {
     let y = 0;
     for (const t of this.hillTerms) y += t.amp * Math.sin(s / t.wave + t.phase);
     return y * smoothstep(s / 120);
+  }
+
+  elevation(s: number): number {
+    const raw = this.rawElevation(s);
+    // Flatten out along the coast so the sea beside it can be level.
+    const coast = blendAt(this.biomes, s, 'coast');
+    if (coast <= 0) return raw;
+    const seg = this.biomes.find(
+      (b) => b.kind === 'coast' && s >= b.from - 160 && s <= b.to + 160,
+    );
+    if (!seg) return raw;
+    const level = (this.seaLevels.get(seg.from) ?? raw - TRACK.coastDrop) + TRACK.coastDrop;
+    return raw + (level - raw) * coast;
   }
 
   /** Index + fractional blend for a distance along the track. */
@@ -193,19 +256,84 @@ export class Track {
     return out;
   }
 
+  /**
+   * Half-width of the central median here, 0 where the road is undivided.
+   * Ramped at each end so a divided section opens up gradually rather than
+   * a barrier appearing under your wheels.
+   */
+  medianAt(s: number): number {
+    const ramp = TRACK.medianRamp;
+    for (const seg of this.divided) {
+      if (s < seg.from - ramp || s > seg.to + ramp) continue;
+      const into = Math.min(s - (seg.from - ramp), seg.to + ramp - s) / ramp;
+      // Ease in and out; a linear ramp makes the island arrive too squarely.
+      const t = clamp(into, 0, 1);
+      return seg.halfWidth * (t * t * (3 - 2 * t));
+    }
+    return 0;
+  }
+
+  /** True where the split is wide enough to be an island with a route each side. */
+  isForkAt(s: number): boolean {
+    const ramp = TRACK.medianRamp;
+    for (const seg of this.divided) {
+      if (s < seg.from - ramp || s > seg.to + ramp) continue;
+      return seg.fork;
+    }
+    return false;
+  }
+
+  /**
+   * Outer edge of the tarmac. The carriageways move outward around a median,
+   * so each keeps its full width however wide the split gets.
+   */
+  edgeAt(s: number): number {
+    return this.halfWidth + this.medianAt(s);
+  }
+
+  /** Centre of a traffic lane here, shifted out around any median. */
+  laneAt(lane: number, s: number): number {
+    const median = this.medianAt(s);
+    return lane + Math.sign(lane) * median;
+  }
+
   /** True once the given lateral offset has both wheels off the asphalt. */
-  isOffRoad(lateral: number): boolean {
-    return Math.abs(lateral) > this.halfWidth;
+  isOffRoad(lateral: number, s = 0): boolean {
+    if (Math.abs(lateral) > this.edgeAt(s)) return true;
+
+    // The median is grass, not tarmac - but only once there is actually a
+    // strip wide enough to be in. Treating the hairline at the very start of
+    // the ramp as grass drops anyone riding the centre line straight to
+    // off-road grip, which feels like the bike breaking rather than like
+    // running onto a verge.
+    const median = this.medianAt(s);
+    if (median < TRACK.medianMinEffective) return false;
+    return Math.abs(lateral) < median - TRACK.medianForgiveness;
   }
 
   /** Hard limit: past this you are in the trees / barrier. */
-  isOutOfBounds(lateral: number): boolean {
-    return Math.abs(lateral) > this.halfWidth + this.shoulder;
+  isOutOfBounds(lateral: number, s = 0): boolean {
+    if (Math.abs(lateral) > this.edgeAt(s) + this.shoulder) return true;
+
+    // A fork's island is planted and barriered: once you have taken a side you
+    // are committed to it until the road rejoins. A narrow median is only
+    // grass, so that stays merely slow rather than terminal.
+    if (!this.isForkAt(s)) return false;
+    const median = this.medianAt(s);
+    if (median < TRACK.forkImpassableFrom) return false;
+    return Math.abs(lateral) < median - TRACK.medianForgiveness;
   }
 
   /** Clamp a lateral offset to the drivable + shoulder corridor. */
-  clampLateral(lateral: number): number {
-    const limit = this.halfWidth + this.shoulder;
-    return clamp(lateral, -limit, limit);
+  clampLateral(lateral: number, s = 0): number {
+    const limit = this.edgeAt(s) + this.shoulder;
+    const median = this.medianAt(s);
+    const clamped = clamp(lateral, -limit, limit);
+    // Never leave anyone stranded inside the island; push them to the nearer
+    // carriageway.
+    if (median > TRACK.medianMinEffective && Math.abs(clamped) < median) {
+      return Math.sign(clamped || 1) * (median + 1.5);
+    }
+    return clamped;
   }
 }

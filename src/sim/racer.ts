@@ -127,8 +127,14 @@ export function remount(r: Racer, track: Track): void {
   r.speed = CRASH.remountSpeed;
   r.s = Math.max(0, r.s - CRASH.setback);
   // Drag the rider back onto the asphalt so they do not respawn in the trees.
-  const limit = track.halfWidth - 1.5;
+  // Back onto a carriageway - which for a fork means one side or the other.
+  r.lateral = track.clampLateral(r.lateral, r.s);
+  const limit = track.edgeAt(r.s) - 1.5;
   r.lateral = clamp(r.lateral, -limit, limit);
+  const median = track.medianAt(r.s);
+  if (median > 0 && Math.abs(r.lateral) < median + 1) {
+    r.lateral = Math.sign(r.lateral || 1) * (median + 1.5);
+  }
   r.lean = 0;
   r.downSeverity = 0;
   r.riderThrow = 0;
@@ -152,7 +158,7 @@ export function giveBoost(r: Racer): void {
 /** Speed ceiling for this racer right now, accounting for surface and state. */
 export function speedCap(r: Racer, track: Track): number {
   let cap = BIKE.maxSpeed * r.speedScale;
-  if (track.isOffRoad(r.lateral)) cap *= BIKE.offroadGrip;
+  if (track.isOffRoad(r.lateral, r.s)) cap *= BIKE.offroadGrip;
   if (r.boostTimer > 0) cap *= BIKE.boostMultiplier;
   if (r.stagger > 0) cap *= 0.86;
   // Riding hurt costs you top end - keeps fights meaningful.

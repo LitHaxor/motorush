@@ -8,7 +8,7 @@ import { stepRacer } from '../../src/sim/physics';
 import { Track } from '../../src/sim/track';
 import type { Racer } from '../../src/sim/types';
 
-const track = new Track({ seed: 2, length: 1000 });
+const track = new Track({ seed: 2, length: 1000, divided: false });
 /** Run the swing forward to the frame where it actually connects. */
 const advanceToStrike = (rs: Racer[]) => {
   for (const r of rs) stepRacer(r, track, { throttle: 0, brake: 0, steer: 0, attackLeft: false, attackRight: false }, COMBAT.windup + 0.001);

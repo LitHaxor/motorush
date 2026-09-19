@@ -178,7 +178,7 @@ export function stepRacer(
   let dx = steer * BIKE.steerSpeed * steerAuthority(r.speed) * dt;
   dx += corneringDrift(curvature, r.speed) * dt;
   dx += r.staggerPush * dt;
-  if (track.isOffRoad(r.lateral)) {
+  if (track.isOffRoad(r.lateral, r.s)) {
     // Dirt grabs the front wheel and wanders. Deterministic wobble keyed off `s`.
     dx += Math.sin(r.s * 0.9 + r.id * 3.1) * BIKE.offroadRumble * dt;
   }
@@ -186,8 +186,8 @@ export function stepRacer(
   r.staggerPush = damp(r.staggerPush, 0, 5, dt);
 
   // Barrier / scenery strike at the very edge of the corridor.
-  if (track.isOutOfBounds(r.lateral)) {
-    r.lateral = track.clampLateral(r.lateral);
+  if (track.isOutOfBounds(r.lateral, r.s)) {
+    r.lateral = track.clampLateral(r.lateral, r.s);
     const fatal = damageRacer(r, HEALTH.barrierDamage);
     if (knockDown(r, 0.85)) {
       events.push({ type: 'crash', racer: r, cause: 'barrier', fatal });

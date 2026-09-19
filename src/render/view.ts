@@ -15,7 +15,9 @@ import { swingProgress } from '../sim/combat';
 
 import { pickSky, type SkyPreset } from './palette';
 import { createSky, type SkyHandle } from './sky';
-import { buildRoad, buildFinishLine, buildStartLine, type RoadHandle } from './roadmesh';
+import {
+  buildRoad, buildWater, buildPaddies, buildFinishLine, buildStartLine, type RoadHandle,
+} from './roadmesh';
 import {
   buildScenery, createPickupMesh, createPedestrianMesh, buildCrossings,
   type SceneryHandle, type PickupRig, type PedestrianRig,
@@ -27,7 +29,7 @@ import { createCarMesh, createCarFromModel, disposeCarGeometry, type CarRig } fr
 import { ParticleField, CameraShake } from './effects';
 import { loadGroundTextures, type GroundTextures } from './assets';
 import { loadModels, CAR_MODELS, type ModelLibrary } from './models';
-import { loadFoliageAtlas, buildTreeVariants, type TreeVariant } from './foliage';
+import { loadFoliageAtlas, buildTreeVariants, buildGrassTuft, type TreeVariant } from './foliage';
 
 export type QualityLevel = 'low' | 'high';
 
@@ -77,6 +79,8 @@ export class GameView {
   private road: RoadHandle | null = null;
   private scenery: SceneryHandle | null = null;
   private trackProps: THREE.Group | null = null;
+  private water: { group: THREE.Group; dispose(): void } | null = null;
+  private paddies: { group: THREE.Group; dispose(): void } | null = null;
 
   private readonly bikeRigs = new Map<number, BikeRig>();
   private readonly riderRigs = new Map<number, RiderRig>();
@@ -104,6 +108,7 @@ export class GameView {
   private textures!: GroundTextures;
   private models!: ModelLibrary;
   private treeVariants: TreeVariant[] = [];
+  private grassTuft: TreeVariant | null = null;
 
   // Scratch objects reused every frame to keep the GC quiet.
   private readonly tmpVec = new THREE.Vector3();
@@ -148,7 +153,9 @@ export class GameView {
     ]);
     view.textures = textures;
     view.models = models;
-    view.treeVariants = buildTreeVariants(foliage, makeRng(world.seed ^ 0x5eed));
+    const foliageRng = makeRng(world.seed ^ 0x5eed);
+    view.treeVariants = buildTreeVariants(foliage, foliageRng);
+    view.grassTuft = buildGrassTuft(foliage, foliageRng);
     view.setupScene();
     view.buildWorld();
     (window as unknown as { __rbView?: GameView }).__rbView = view;
@@ -210,14 +217,20 @@ export class GameView {
   /** Build everything that depends on the current track. */
   private buildWorld(): void {
     const world = this.world;
-    this.road = buildRoad(world.track, this.preset, this.textures, world.citySegments);
+    this.road = buildRoad(world.track, this.preset, this.textures, world.biomes);
     this.scene.add(this.road.group);
 
     this.scenery = buildScenery(
       world.track, world.rng, this.preset, this.models,
-      world.citySegments, this.treeVariants,
+      world.biomes, this.treeVariants, this.grassTuft,
     );
     this.scene.add(this.scenery.group);
+
+    this.water = buildWater(world.track, world.biomes, this.preset);
+    this.scene.add(this.water.group);
+
+    this.paddies = buildPaddies(world.track, world.biomes);
+    this.scene.add(this.paddies.group);
 
     this.trackProps = new THREE.Group();
     this.trackProps.add(buildStartLine(world.track));
@@ -324,6 +337,16 @@ export class GameView {
     if (this.trackProps) {
       this.scene.remove(this.trackProps);
       this.trackProps = null;
+    }
+    if (this.water) {
+      this.scene.remove(this.water.group);
+      this.water.dispose();
+      this.water = null;
+    }
+    if (this.paddies) {
+      this.scene.remove(this.paddies.group);
+      this.paddies.dispose();
+      this.paddies = null;
     }
   }
 

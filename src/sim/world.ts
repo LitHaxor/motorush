@@ -13,7 +13,7 @@ import { resolveSwings, startAttack, canAttack } from './combat';
 import { TrafficSystem, collideWithTraffic, collideRacers } from './traffic';
 import { generatePickups, collectPickups } from './pickups';
 import { aiInput, createAiState, type AiWorldView } from './ai';
-import { buildCitySegments, type CitySegment } from './city';
+import { buildBiomes, citySegments, type BiomeSegment, type CitySegment } from './biomes';
 import { generatePedestrians, stepPedestrians, type Crossing, type Pedestrian } from './pedestrians';
 import type {
   DifficultyKey,
@@ -54,6 +54,7 @@ export class World implements AiWorldView {
   readonly track: Track;
   readonly traffic: TrafficSystem;
   readonly pickups: Pickup[];
+  readonly biomes: BiomeSegment[];
   readonly citySegments: CitySegment[];
   readonly crossings: Crossing[];
   readonly pedestrians: Pedestrian[];
@@ -89,10 +90,14 @@ export class World implements AiWorldView {
     this.aggressionScale = preset.aggression;
     this.policeScale = preset.police;
 
-    this.track = new Track({ seed, length: this.raceDistance + TRACK.runout });
+    // Biomes first: the track levels itself out along coast sections, so it
+    // needs to know where they are before it bakes its elevation.
+    const trackLength = this.raceDistance + TRACK.runout;
+    this.biomes = buildBiomes(trackLength, this.rng);
+    this.track = new Track({ seed, length: trackLength, biomes: this.biomes });
     this.traffic = new TrafficSystem(this.track, this.rng, { density: preset.traffic });
     this.pickups = generatePickups(this.track, this.rng, this.raceDistance);
-    this.citySegments = buildCitySegments(this.track.length, this.rng);
+    this.citySegments = citySegments(this.biomes);
     const crowd = generatePedestrians(this.citySegments, this.rng);
     this.crossings = crowd.crossings;
     this.pedestrians = crowd.pedestrians;

@@ -56,8 +56,14 @@ function planLane(r: Racer, world: AiWorldView, ai: AiState): void {
   let bestScore = -Infinity;
   let bestLateral = r.lateral;
 
-  for (const cand of LANE_CANDIDATES) {
-    if (Math.abs(cand) > track.halfWidth - 1.2) continue;
+  // Where a median splits the road the lanes move outward, and the middle is
+  // no longer a place you can ride.
+  const median = track.medianAt(r.s);
+  const edge = track.edgeAt(r.s);
+  for (const base of LANE_CANDIDATES) {
+    const cand = base + Math.sign(base) * median;
+    if (Math.abs(cand) > edge - 1.2) continue;
+    if (median > 0 && Math.abs(cand) < median + 0.8) continue;
     let score = clearAhead(r.s, cand, traffic);
     // Staying on the tarmac and not swerving wildly are both worth something.
     score -= Math.abs(cand - r.lateral) * 1.6;
@@ -147,7 +153,9 @@ export function aiInput(r: Racer, world: AiWorldView, dt: number): RacerInput {
   // --- steering ----------------------------------------------------------
   let desired = ai.desiredLateral;
   if (r.kind === 'cop') {
-    desired = clamp(world.player.lateral, -TRACK.halfWidth + 1, TRACK.halfWidth - 1);
+    // Follow the player onto whichever side of a fork they took.
+    const edge = world.track.edgeAt(r.s) - 1;
+    desired = clamp(world.player.lateral, -edge, edge);
   }
   // Counter the corner so the AI does not drift off the outside of every bend.
   const drift = world.track.curvatureAt(r.s) * r.speed * r.speed * 0.23 * BIKE.driftFactor;

@@ -12,8 +12,8 @@ import {
 } from './textures';
 import { instanceModel, FIRST_BROADLEAF, type ModelLibrary } from './models';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { inCity, type CitySegment } from '../sim/city';
-import type { TreeVariant } from './foliage';
+import { inCity, biomeAt, coastAt, type BiomeSegment } from '../sim/biomes';
+import type { TreeVariant, TreeSpecies } from './foliage';
 
 export interface SceneryHandle {
   group: THREE.Group;
@@ -40,61 +40,136 @@ export function buildScenery(
   rng: Rng,
   preset: SkyPreset,
   models: ModelLibrary,
-  citySegments: readonly CitySegment[],
+  biomes: readonly BiomeSegment[],
   treeVariants: readonly TreeVariant[] = [],
+  grassTuft: TreeVariant | null = null,
 ): SceneryHandle {
   const group = new THREE.Group();
   group.name = 'scenery';
   const disposables: { dispose(): void }[] = [];
-  const edge = track.halfWidth + track.shoulder;
-  const elevate = makeTerrainElevation(citySegments);
+  // Widest the road ever gets, so nothing is planted where a fork will open.
+  const maxMedian = track.divided.reduce((m, d) => Math.max(m, d.halfWidth), 0);
+  const edge = track.halfWidth + track.shoulder + maxMedian;
+  const edgeAt = (s: number) => track.edgeAt(s) + track.shoulder;
+  const elevate = makeTerrainElevation(biomes);
 
   // ---------------------------------------------------------------- trees
-  // Photographic billboards: each tree is two crossed alpha-cut planes showing
-  // a canopy composited from real branch photography. Two draw calls per
-  // variant covers the whole track, however many trees are on it.
-  const city = citySegments;
+  // What grows where. Each biome draws from its own list of species, which is
+  // most of what makes one stretch of road feel different from the next.
+  const SPECIES_BY_BIOME: Record<string, TreeSpecies[]> = {
+    country: ['conifer', 'conifer', 'broadleaf', 'oak', 'maple', 'bush'],
+    hills: ['conifer', 'conifer', 'conifer', 'bush'],
+    jungle: ['jungle', 'jungle', 'jungle', 'broadleaf', 'bush', 'bush'],
+    coast: ['broadleaf', 'oak', 'bush', 'bush'],
+    paddy: ['bush', 'broadleaf'],
+    city: ['oak', 'maple', 'bush'],
+  };
+
+  /** How thickly trees are planted, and how far back from the road. */
+  const DENSITY_BY_BIOME: Record<string, { skip: number; reach: number; height: [number, number] }> = {
+    country: { skip: 0.18, reach: 100, height: [8, 21] },
+    hills: { skip: 0.1, reach: 130, height: [9, 24] },
+    jungle: { skip: 0.02, reach: 70, height: [10, 26] },
+    coast: { skip: 0.55, reach: 45, height: [9, 17] },
+    paddy: { skip: 0.82, reach: 60, height: [5, 11] },
+    city: { skip: 0.85, reach: 0, height: [5, 8] },
+  };
+
+  const bySpecies = new Map<TreeSpecies, number[]>();
+  treeVariants.forEach((v, i) => {
+    const list = bySpecies.get(v.species) ?? [];
+    list.push(i);
+    bySpecies.set(v.species, list);
+  });
+
   interface TreeSpot { s: number; lateral: number; height: number; rot: number; kind: number; tint: number }
   const treePlacements: TreeSpot[] = [];
-  const variantCount = treeVariants.length;
-  const conifers = treeVariants.filter((v) => v.conifer).length;
 
-  if (variantCount > 0) {
-    for (let s = 20; s < track.length; s += rng.range(7, 15)) {
-      const urban = inCity(city, s);
+  if (treeVariants.length) {
+    for (let s = 20; s < track.length; s += rng.range(6, 13)) {
+      const biome = biomeAt(biomes, s);
+      const density = DENSITY_BY_BIOME[biome] ?? DENSITY_BY_BIOME.country;
+      const species = SPECIES_BY_BIOME[biome] ?? SPECIES_BY_BIOME.country;
+      const urban = biome === 'city';
+      const sea = coastAt(biomes, s);
+
       for (const sign of [-1, 1]) {
-        if (rng.chance(urban ? 0.85 : 0.18)) continue;
-        const lateral = urban
-          ? sign * rng.range(edge + 1.5, edge + 4)
-          : sign * rng.range(edge + 3, 100);
-        // Conifers dominate open country; town gets the broadleaf.
-        const broadleaf = urban || rng.chance(0.3);
-        const kind = broadleaf && conifers < variantCount
-          ? conifers + rng.int(0, variantCount - conifers - 1)
-          : rng.int(0, Math.max(0, conifers - 1));
+        if (rng.chance(density.skip)) continue;
+        // Nothing grows out in the water.
+        if (sea.blend > 0.4 && sign === sea.side) continue;
+
+        const distance = urban || density.reach <= 0
+          ? rng.range(edge + 1.5, edge + 4)
+          : rng.range(edge + 2, density.reach);
+
+        const pick = species[Math.floor(rng() * species.length)];
+        const pool = bySpecies.get(pick) ?? bySpecies.get('broadleaf') ?? [0];
+        const kind = pool[Math.floor(rng() * pool.length)];
+        const variant = treeVariants[kind];
+        // Bushes are shrubs, whatever biome they are in.
+        const range: [number, number] = variant.species === 'bush'
+          ? [1.4, 3.2]
+          : density.height;
+
+        // Keep the canopy off the carriageway. A tree's crown spreads with its
+        // height, so one planted close to the verge has to be a small one -
+        // which is also how roadside planting actually looks.
+        const clearance = Math.max(0, distance - edge - 0.5);
+        const maxHeight = clearance / Math.max(0.05, variant.radius * 0.85);
+        const height = Math.min(rng.range(range[0], range[1]), maxHeight);
+        if (height < range[0] * 0.45) continue;
+
         treePlacements.push({
           s,
-          lateral,
-          // Broadleaf crowns are wide, so cap their height or they sprawl
-          // across the whole verge.
-          height: urban
-            ? rng.range(5, 8)
-            : broadleaf ? rng.range(7, 13) : rng.range(9, 22),
-          rot: rng() * Math.PI,
+          lateral: sign * distance,
+          height,
+          rot: rng() * Math.PI * 2,
           // Subtle per-tree tint so no two neighbours match exactly.
           tint: rng.range(0.78, 1.12),
-        kind });
+          kind,
+        });
+      }
+    }
+  }
+
+  // ------------------------------------------------------------- islands
+  // A fork's island is planted, which is what makes it read as something you
+  // cannot cut across rather than a wide grass median.
+  if (treeVariants.length) {
+    for (const seg of track.divided) {
+      if (!seg.fork) continue;
+      for (let s = seg.from + 12; s < seg.to - 12; s += rng.range(7, 16)) {
+        const median = track.medianAt(s);
+        if (median < 4) continue;
+        const pick = rng.chance(0.45) ? 'bush' : biomeAt(biomes, s) === 'jungle' ? 'jungle' : 'conifer';
+        const pool = bySpecies.get(pick as TreeSpecies) ?? bySpecies.get('bush') ?? [0];
+        const kind = pool[Math.floor(rng() * pool.length)];
+        const variant = treeVariants[kind];
+        // Fit the crown inside the island so it does not hang over a lane.
+        const room = median - 1.2;
+        if (room <= 0.5) continue;
+        const height = Math.min(
+          variant.species === 'bush' ? rng.range(1.4, 3) : rng.range(6, 14),
+          room / Math.max(0.05, variant.radius * 0.9),
+        );
+        if (height < 1) continue;
+        treePlacements.push({
+          s,
+          lateral: rng.range(-room * 0.55, room * 0.55),
+          height,
+          rot: rng() * Math.PI * 2,
+          tint: rng.range(0.8, 1.1),
+          kind,
+        });
       }
     }
   }
 
   const instancedMeshes: THREE.InstancedMesh[] = [];
 
-  if (variantCount > 0 && treePlacements.length) {
+  if (treeVariants.length && treePlacements.length) {
     const buckets: TreeSpot[][] = treeVariants.map(() => []);
-    for (const spot of treePlacements) {
-      buckets[Math.min(spot.kind, variantCount - 1)].push(spot);
-    }
+    for (const spot of treePlacements) buckets[Math.min(spot.kind, treeVariants.length - 1)].push(spot);
 
     const tintColour = new THREE.Color();
     const barkTex = makeBarkTexture();
@@ -103,20 +178,25 @@ export function buildScenery(
     trunkGeo.translate(0, 0.5, 0);
     disposables.push(barkTex, barkMat, trunkGeo);
 
-    // Trunks for every tree, in one instanced draw.
-    const trunks = new THREE.InstancedMesh(trunkGeo, barkMat, treePlacements.length);
-    trunks.castShadow = true;
-    trunks.frustumCulled = false;
-    treePlacements.forEach((spot, i) => {
-      const pos = groundAt(track, spot.s, spot.lateral, elevate);
-      dummy.position.copy(pos);
-      dummy.rotation.set(0, spot.rot, 0);
-      dummy.scale.set(spot.height, spot.height, spot.height);
-      dummy.updateMatrix();
-      trunks.setMatrixAt(i, dummy.matrix);
-    });
-    trunks.instanceMatrix.needsUpdate = true;
-    instancedMeshes.push(trunks);
+    // Trunks for everything except the shrubs, in one instanced draw.
+    const trunked = treePlacements.filter((sp) => treeVariants[sp.kind].species !== 'bush');
+    if (trunked.length) {
+      const trunks = new THREE.InstancedMesh(trunkGeo, barkMat, trunked.length);
+      trunks.castShadow = true;
+      trunks.frustumCulled = false;
+      trunked.forEach((spot, i) => {
+        const pos = groundAt(track, spot.s, spot.lateral, elevate);
+        dummy.position.copy(pos);
+        dummy.rotation.set(0, spot.rot, 0);
+        // Palms have tall bare trunks; the rest are mostly hidden by canopy.
+        const slim = 1;
+        dummy.scale.set(spot.height * slim, spot.height, spot.height * slim);
+        dummy.updateMatrix();
+        trunks.setMatrixAt(i, dummy.matrix);
+      });
+      trunks.instanceMatrix.needsUpdate = true;
+      instancedMeshes.push(trunks);
+    }
 
     treeVariants.forEach((variant, vi) => {
       const spots = buckets[vi];
@@ -124,18 +204,14 @@ export function buildScenery(
 
       const mat = new THREE.MeshStandardMaterial({
         map: variant.texture,
-        // Alpha test, not blending: nothing to sort, and depth still writes so
-        // the cards occlude each other correctly inside the canopy.
         alphaTest: 0.4,
-        // The canopy carries mirrored cards, so each face is front-facing and
-        // three never negates the normal on us.
         side: THREE.FrontSide,
         roughness: 0.95,
         metalness: 0,
       });
 
       const mesh = new THREE.InstancedMesh(variant.geometry, mat, spots.length);
-      mesh.castShadow = false; // alpha-tested shadows need a custom depth pass
+      mesh.castShadow = false;
       mesh.frustumCulled = false;
       spots.forEach((spot, i) => {
         const pos = groundAt(track, spot.s, spot.lateral, elevate);
@@ -154,12 +230,63 @@ export function buildScenery(
     });
   }
 
+  // ----------------------------------------------------------------- turf
+  // Ground texture alone reads as painted on at speed; actual blades catching
+  // the light beside the road are what sell it.
+  if (grassTuft) {
+    const tufts: { s: number; lateral: number; size: number; rot: number; tint: number }[] = [];
+    for (let s = 10; s < track.length; s += rng.range(1.6, 4.2)) {
+      const biome = biomeAt(biomes, s);
+      if (biome === 'city') continue;
+      const sea = coastAt(biomes, s);
+      const lush = biome === 'jungle' || biome === 'paddy' ? 3 : 1;
+      for (let i = 0; i < lush; i++) {
+        const sign = rng.chance(0.5) ? -1 : 1;
+        if (sea.blend > 0.4 && sign === sea.side) continue;
+        tufts.push({
+          s: s + rng.range(-1.5, 1.5),
+          // Thickest right at the verge, thinning out away from the road.
+          lateral: sign * (edge + 0.4 + Math.pow(rng(), 1.7) * 26),
+          size: rng.range(0.5, 1.3),
+          rot: rng() * Math.PI,
+          tint: rng.range(0.7, 1.15),
+        });
+      }
+    }
+
+    const mat = new THREE.MeshStandardMaterial({
+      map: grassTuft.texture,
+      alphaTest: 0.38,
+      side: THREE.FrontSide,
+      roughness: 1,
+      metalness: 0,
+    });
+    const mesh = new THREE.InstancedMesh(grassTuft.geometry, mat, tufts.length);
+    mesh.castShadow = false;
+    mesh.frustumCulled = false;
+    const tintColour = new THREE.Color();
+    tufts.forEach((tuft, i) => {
+      const pos = groundAt(track, tuft.s, tuft.lateral, elevate);
+      dummy.position.copy(pos);
+      dummy.rotation.set(0, tuft.rot, 0);
+      dummy.scale.setScalar(tuft.size);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      tintColour.setRGB(tuft.tint * 0.92, tuft.tint, tuft.tint * 0.78);
+      mesh.setColorAt(i, tintColour);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    instancedMeshes.push(mesh);
+    disposables.push(grassTuft.geometry, mat, grassTuft.texture);
+  }
+
   // ---------------------------------------------------------------- rocks
   const rockCount = Math.floor(track.length / 26);
   const rockPlacements: { s: number; lateral: number; scale: number; rot: number }[] = [];
   for (let i = 0; i < rockCount; i++) {
     const s = rng.range(10, track.length);
-    if (inCity(city, s)) continue;
+    if (inCity(biomes, s)) continue;
     rockPlacements.push({
       s,
       lateral: (rng.chance(0.5) ? -1 : 1) * rng.range(edge + 1.2, 60),
@@ -285,7 +412,9 @@ export function buildScenery(
   const bs = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
 
-  for (const seg of city) {
+  for (const seg of biomes) {
+    // Buildings belong to the city, not to every biome.
+    if (seg.kind !== 'city') continue;
     for (const sign of [-1, 1]) {
       // Walk the block, packing buildings shoulder to shoulder along the kerb.
       let s = seg.from;
@@ -336,7 +465,7 @@ export function buildScenery(
   const legMat = new THREE.MeshStandardMaterial({ color: 0x3a3f47, roughness: 0.8 });
   disposables.push(boardGeo, legGeo, legMat);
   for (let s = 420; s < track.length; s += rng.range(500, 900)) {
-    if (inCity(city, s)) continue;
+    if (inCity(biomes, s)) continue;
     const sign = rng.chance(0.5) ? -1 : 1;
     const lateral = sign * rng.range(20, 30);
     const pos = groundAt(track, s, lateral, elevate);

@@ -104,7 +104,7 @@ export class TrafficSystem {
     car.s = s;
     car.dir = dir;
     car.laneIndex = laneIndex;
-    car.lateral = TRACK.laneCentres[laneIndex] + rng.range(-0.55, 0.55);
+    car.lateral = this.track.laneAt(TRACK.laneCentres[laneIndex], s) + rng.range(-0.55, 0.55);
     car.speed = rng.range(range[0], range[1]) * (heavy ? 0.78 : 1);
     car.cruise = car.speed;
     car.brake = 0;
@@ -154,8 +154,9 @@ export class TrafficSystem {
       }
 
       car.s += car.speed * car.dir * dt;
-      // Lazy lane drift so traffic does not look like it is on rails.
-      const lane = TRACK.laneCentres[car.laneIndex];
+      // Lazy lane drift so traffic does not look like it is on rails. The
+      // lane itself moves outward where a median splits the carriageways.
+      const lane = this.track.laneAt(TRACK.laneCentres[car.laneIndex], car.s);
       car.lateral = lane + Math.sin(elapsed * 0.6 + car.swervePhase) * car.swerve;
 
       if (car.s > playerS + ahead || car.s < playerS - behind) {

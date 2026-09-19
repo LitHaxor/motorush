@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { World, COUNTDOWN_TIME } from '../../src/sim/world';
 import { knockDown } from '../../src/sim/racer';
 import { POLICE, DIFFICULTY } from '../../src/sim/config';
-import type { RacerInput, SimEvent } from '../../src/sim/types';
+import type { DifficultyKey, RacerInput, SimEvent } from '../../src/sim/types';
 
 const DT = 1 / 60;
 const INPUT = (over: Partial<RacerInput> = {}): RacerInput => ({
@@ -375,5 +375,21 @@ describe('World: arrest vs. wasted', () => {
     w.player.health = 0;
     w.step(DT, INPUT({ throttle: 1 }));
     expect(w.state).toBe('wasted');
+  });
+});
+
+describe('World: police pressure by difficulty', () => {
+  // Tested through addHeat rather than by riding fast for a while: harder
+  // settings also carry more traffic, so a speed-based test ends up measuring
+  // how often the rider crashes rather than how fast heat builds.
+  it('scales heat by difficulty', () => {
+    const gain = (difficulty: DifficultyKey) => {
+      const w = new World({ seed: 5, difficulty });
+      startRace(w);
+      w.addHeat(10);
+      return w.heat;
+    };
+    expect(gain('hard')).toBeGreaterThan(gain('normal'));
+    expect(gain('normal')).toBeGreaterThan(gain('easy'));
   });
 });

@@ -5,7 +5,7 @@ import { stepRacer, corneringDrift, steerAuthority, NEUTRAL_INPUT } from '../../
 import { BIKE, HEALTH, TRACK } from '../../src/sim/config';
 import type { RacerInput } from '../../src/sim/types';
 
-const track = new Track({ seed: 4, length: 3000 });
+const track = new Track({ seed: 4, length: 3000, divided: false });
 const input = (over: Partial<RacerInput> = {}): RacerInput => ({ ...NEUTRAL_INPUT, ...over });
 const run = (r: Parameters<typeof stepRacer>[0], inp: RacerInput, seconds: number, ctx = {}) => {
   const events = [];

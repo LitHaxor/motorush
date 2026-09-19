@@ -15,6 +15,36 @@ export const TRACK = {
   /** Centreline is sampled at this spacing and interpolated in between. */
   sampleStep: 4,
   laneCentres: [-6.75, -2.25, 2.25, 6.75],
+
+  // --- divided sections ---------------------------------------------------
+  /**
+   * Some stretches are a divided highway with a median down the middle. The
+   * road keeps its overall width; the centre simply stops being drivable, so
+   * the lane layout and all the traffic logic are unaffected.
+   */
+  medianHalfWidth: 1.7,
+  medianLength: [420, 900] as [number, number],
+  medianGap: [600, 1500] as [number, number],
+  /**
+   * Some splits are wide enough to be an island, with a route either side of
+   * it. The carriageways move outward to make room, so each keeps its full
+   * width and the player genuinely picks a side.
+   */
+  forkHalfWidth: 9,
+  forkChance: 0.45,
+  /** A fork runs for a kilometre or more: committing to a side has to matter. */
+  forkLength: [850, 1700] as [number, number],
+  /** Distance over which the median opens up and closes again. */
+  medianRamp: 130,
+  /** Narrower than this and the median is paint, not grass. */
+  medianMinEffective: 1.0,
+  /** Clipping the edge of the median is fine; only being in it counts. */
+  medianForgiveness: 0.45,
+  /** Once an island is this wide it is planted, and hitting it is a crash. */
+  forkImpassableFrom: 3.5,
+
+  /** How far the sea sits below the road along a coast section. */
+  coastDrop: 5.5,
 };
 
 export const BIKE = {
