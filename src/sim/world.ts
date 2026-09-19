@@ -78,6 +78,17 @@ export class World implements AiWorldView {
    * and what the snapshots overwrite.
    */
   localRacer: Racer;
+
+  /**
+   * Who the police are after and who the rivals pace themselves against.
+   *
+   * The same rider the screen belongs to. Offline that is racer 0; online the
+   * host sits at the back of the grid, and before this the patrol chased a
+   * bot while the rivals raced against one too.
+   */
+  get chased(): Racer {
+    return this.localRacer;
+  }
   readonly rivals: Racer[] = [];
   cop: Racer | null = null;
   readonly racers: Racer[];
@@ -189,6 +200,16 @@ export class World implements AiWorldView {
       this.rivals.push(rival);
     }
 
+    // Racer 0 gets a brain too. Offline it never uses one - it is you - but
+    // riders fill the grid from the back, so online somebody else holds the
+    // local seat and racer 0 is just another bot. Without this it had no AI
+    // state at all and simply ran flat out in a straight line.
+    //
+    // Created last on purpose: every RNG draw before this point builds the
+    // track, the traffic and the rivals, and inserting a draw earlier would
+    // change what every existing seed produces.
+    this.player.ai = createAiState(this.rng);
+
     this.racers = [this.player, ...this.rivals];
     this.localRacer = this.player;
     this.traffic.prime(200);
@@ -200,7 +221,7 @@ export class World implements AiWorldView {
   }
 
   get progress(): number {
-    return clamp(this.player.s / this.raceDistance, 0, 1);
+    return clamp(this.localRacer.s / this.raceDistance, 0, 1);
   }
 
   /** Every bike currently on the road, cop included. */
@@ -230,9 +251,9 @@ export class World implements AiWorldView {
         kind: 'cop',
         name: 'HIGHWAY PATROL',
         color: 0x1c2b4a,
-        s: this.player.s,
-        lateral: this.player.lateral,
-        speed: this.player.speed,
+        s: this.localRacer.s,
+        lateral: this.localRacer.lateral,
+        speed: this.localRacer.speed,
       });
       cop.weapon = 'baton';
       cop.weaponTimer = Infinity;
@@ -273,9 +294,9 @@ export class World implements AiWorldView {
       kind: 'cop',
       name: 'HIGHWAY PATROL',
       color: 0x1c2b4a,
-      s: Math.max(0, this.player.s - POLICE.spawnBehind),
-      lateral: this.player.lateral,
-      speed: Math.max(this.player.speed, 28),
+      s: Math.max(0, this.localRacer.s - POLICE.spawnBehind),
+      lateral: this.localRacer.lateral,
+      speed: Math.max(this.localRacer.speed, 28),
       speedScale: 1.07,
       aggression: 1,
     });
@@ -290,7 +311,7 @@ export class World implements AiWorldView {
   }
 
   private stepPolice(dt: number, events: SimEvent[]): void {
-    const player = this.player;
+    const player = this.localRacer;
 
     if (!this.cop) {
       const over = player.speed - POLICE.speedThreshold;
@@ -364,13 +385,13 @@ export class World implements AiWorldView {
     this.updateStandings();
     this.result = {
       reason,
-      place: this.player.place,
-      time: this.player.finishTime ?? this.elapsed,
-      distance: this.player.s,
+      place: this.localRacer.place,
+      time: this.localRacer.finishTime ?? this.elapsed,
+      distance: this.localRacer.s,
       raceDistance: this.raceDistance,
-      topSpeed: this.player.bestSpeed,
-      takedowns: this.player.hitsLanded,
-      crashes: this.player.knockdowns,
+      topSpeed: this.localRacer.bestSpeed,
+      takedowns: this.localRacer.hitsLanded,
+      crashes: this.localRacer.knockdowns,
       standings: this.standings.map((r) => ({
         name: r.name,
         place: r.place,
@@ -385,8 +406,8 @@ export class World implements AiWorldView {
   /** Queue a player attack. Returns true if the swing started. */
   requestAttack(dir: number): boolean {
     if (this.state !== 'racing') return false;
-    if (!canAttack(this.player)) return false;
-    return startAttack(this.player, dir);
+    if (!canAttack(this.localRacer)) return false;
+    return startAttack(this.localRacer, dir);
   }
 
   /**
@@ -420,7 +441,7 @@ export class World implements AiWorldView {
       // Hold the throttle as the lights go out for a launch boost. Every
       // human on the grid gets the same chance, local or not.
       for (const r of this.field) {
-        const input = r === this.player ? playerInput : remoteInputs?.get(r.id);
+        const input = r === this.localRacer ? playerInput : remoteInputs?.get(r.id);
         if (!input) continue; // AI riders do not get a holeshot
         const onGas = (input.throttle ?? 0) > 0.5;
         if (this.countdown < 0.55 && onGas) this.holeshotArmed.add(r.id);
@@ -433,7 +454,7 @@ export class World implements AiWorldView {
           if (!this.holeshotArmed.has(r.id)) continue;
           r.boostTimer = 1.8;
           // The event is the local player's cue; other riders just get the boost.
-          if (r === this.player) events.push({ type: 'holeshot' });
+          if (r === this.localRacer) events.push({ type: 'holeshot' });
         }
         events.push({ type: 'go' });
       }
@@ -441,17 +462,17 @@ export class World implements AiWorldView {
     }
 
     this.elapsed += dt;
-    const prevPlace = this.player.place;
+    const prevPlace = this.localRacer.place;
 
     // --- inputs ------------------------------------------------------------
     const field = this.field;
     const inputs = new Map<Racer, Readonly<RacerInput>>();
-    inputs.set(this.player, isRiding(this.player) ? playerInput : NEUTRAL_INPUT);
+    inputs.set(this.localRacer, isRiding(this.localRacer) ? playerInput : NEUTRAL_INPUT);
     for (const r of field) {
-      if (r === this.player) continue;
+      if (r === this.localRacer) continue;
       // A patrol with you on the ground stops racing and pulls over.
       if (r === this.cop && this.arrestPending) {
-        inputs.set(r, copParkInput(r, this.player.s, parkSpotBeside(this.player, this.track)));
+        inputs.set(r, copParkInput(r, this.localRacer.s, parkSpotBeside(this.localRacer, this.track)));
         continue;
       }
       // Someone else riding this one takes their input off the wire. The AI
@@ -467,43 +488,43 @@ export class World implements AiWorldView {
       const evs = stepRacer(r, this.track, inputs.get(r) ?? NEUTRAL_INPUT, dt, ctx);
       for (const e of evs) {
         events.push(e);
-        if (e.type === 'crash' && e.racer === this.player) this.addHeat(POLICE.crashHeat);
+        if (e.type === 'crash' && e.racer === this.localRacer) this.addHeat(POLICE.crashHeat);
       }
     }
 
     // --- interactions --------------------------------------------------------
     for (const e of resolveSwings(field)) {
       events.push(e);
-      if (e.type === 'hit' && e.attacker === this.player) {
+      if (e.type === 'hit' && e.attacker === this.localRacer) {
         this.addHeat(e.victim.kind === 'cop' ? POLICE.copHitHeat : POLICE.hitHeat);
       }
     }
-    this.traffic.step(dt, this.player.s, this.elapsed, field);
+    this.traffic.step(dt, this.localRacer.s, this.elapsed, field);
     events.push(...collideWithTraffic(field, this.traffic));
     events.push(...collideRacers(field));
     events.push(...collectPickups(field, this.pickups));
-    events.push(...stepPedestrians(this.pedestrians, field, this.player.s, dt));
+    events.push(...stepPedestrians(this.pedestrians, field, this.localRacer.s, dt));
 
     for (const e of events) {
       // Flattening a pedestrian is exactly the sort of thing that gets you
       // noticed.
-      if (e.type === 'pedestrianHit' && e.racer === this.player) this.addHeat(POLICE.hitHeat * 1.6);
+      if (e.type === 'pedestrianHit' && e.racer === this.localRacer) this.addHeat(POLICE.hitHeat * 1.6);
     }
 
     this.stepPolice(dt, events);
 
     // --- outcomes -------------------------------------------------------------
-    if (this.player.health <= 0 && this.player.state !== 'busted') {
-      knockDown(this.player, 1, CRASH.tumbleTime + CRASH.knockoutExtra);
+    if (this.localRacer.health <= 0 && this.localRacer.state !== 'busted') {
+      knockDown(this.localRacer, 1, CRASH.tumbleTime + CRASH.knockoutExtra);
       // If a patrol put you there - or is simply standing over you when you go
       // down - you are arrested rather than merely beaten. Checking proximity
       // here as well as in stepPolice keeps the outcome independent of which
       // one happens to land first on a given tick.
       const cop = this.cop;
       const copOnScene =
-        cop != null && isRiding(cop) && Math.abs(cop.s - this.player.s) < POLICE.arrestRange;
+        cop != null && isRiding(cop) && Math.abs(cop.s - this.localRacer.s) < POLICE.arrestRange;
       if (this.arrestPending || copOnScene) {
-        this.player.state = 'busted';
+        this.localRacer.state = 'busted';
         this.endRace('busted', events);
       } else {
         this.endRace('wasted', events);
@@ -511,10 +532,10 @@ export class World implements AiWorldView {
     }
 
     this.updateStandings();
-    if (this.player.place !== prevPlace && this.state === 'racing') {
-      events.push({ type: 'placeChange', place: this.player.place, from: prevPlace });
+    if (this.localRacer.place !== prevPlace && this.state === 'racing') {
+      events.push({ type: 'placeChange', place: this.localRacer.place, from: prevPlace });
     }
-    if (this.player.state === 'finished' && this.state === 'racing') {
+    if (this.localRacer.state === 'finished' && this.state === 'racing') {
       this.endRace('finished', events);
     }
 
@@ -531,6 +552,6 @@ export class World implements AiWorldView {
           : { throttle: 0.5, brake: 0, steer: 0, attackLeft: false, attackRight: false };
       stepRacer(r, this.track, input, dt, ctx);
     }
-    this.traffic.step(dt, this.player.s, this.elapsed);
+    this.traffic.step(dt, this.localRacer.s, this.elapsed);
   }
 }

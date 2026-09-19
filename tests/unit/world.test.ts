@@ -757,3 +757,45 @@ describe('World: patrols a guest was told about', () => {
     expect(w.adoptCops([900])[0].weapon).toBe('baton');
   });
 });
+
+describe('World: your input rides your own bike', () => {
+  it('drives the seat you hold, not racer zero', () => {
+    // Riders fill the grid from the back, so a room owner sits at seat 7.
+    // Input went to racer 0 regardless, which left the owner watching the AI
+    // ride their motorcycle while they steered a bot.
+    const w = new World({ seed: 12 });
+    const mine = w.racers[7]!;
+    w.localRacer = mine;
+
+    startRace(w, INPUT({ throttle: 1 }));
+    for (let i = 0; i < 120; i++) w.step(DT, INPUT({ throttle: 1 }));
+
+    expect(mine.speed).toBeGreaterThan(0);
+    // ...and the AI is not also riding it.
+    expect(mine.ai).toBeTruthy();
+  });
+
+  it('hands racer zero to the AI when somebody else holds the local seat', () => {
+    const w = new World({ seed: 12 });
+    w.localRacer = w.racers[7]!;
+    const before = w.racers[0]!.ai!.planTimer;
+
+    startRace(w, INPUT({ throttle: 1 }));
+    for (let i = 0; i < 60; i++) w.step(DT, INPUT({ throttle: 1 }));
+
+    expect(w.racers[0]!.ai!.planTimer).not.toBe(before);
+  });
+
+  it('still drives racer zero when playing offline', () => {
+    const w = new World({ seed: 12 });
+    startRace(w, INPUT({ throttle: 1 }));
+    for (let i = 0; i < 60; i++) w.step(DT, INPUT({ throttle: 1 }));
+    expect(w.player.speed).toBeGreaterThan(0);
+  });
+
+  it('sends the police after the rider holding the local seat', () => {
+    const w = new World({ seed: 12 });
+    w.localRacer = w.racers[6]!;
+    expect(w.chased).toBe(w.racers[6]);
+  });
+});

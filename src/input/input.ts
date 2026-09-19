@@ -35,9 +35,25 @@ export class InputManager {
   onMute: (() => void) | null = null;
   onAnyKey: (() => void) | null = null;
 
+  /**
+   * True while the player is typing into a field.
+   *
+   * The game binds single letters - P pauses, M mutes - and swallows them
+   * with preventDefault, so without this check a rider name could not contain
+   * a P and a room code could not be typed at all.
+   */
+  private static isTyping(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+  }
+
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     // Let the browser keep its own shortcuts (reload, devtools, ...).
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // Typing beats driving: leave the keystroke to the field.
+    if (InputManager.isTyping(e.target)) return;
     if (e.code === 'Escape' || e.code === 'KeyP') {
       e.preventDefault();
       this.onPause?.();
@@ -62,6 +78,14 @@ export class InputManager {
     this.held.delete(e.code);
   };
 
+  /** Nothing is held while a field has focus, so the bike does not run on. */
+  private readonly onFocusIn = (e: FocusEvent): void => {
+    if (InputManager.isTyping(e.target)) {
+      this.held.clear();
+      this.touch = { steer: 0, throttle: 0, brake: 0 };
+    }
+  };
+
   private readonly onBlur = (): void => {
     this.held.clear();
     this.touch = { steer: 0, throttle: 0, brake: 0 };
@@ -77,6 +101,7 @@ export class InputManager {
 
   constructor(target: Window = window) {
     target.addEventListener('keydown', this.onKeyDown);
+    target.addEventListener('focusin', this.onFocusIn as EventListener);
     target.addEventListener('keyup', this.onKeyUp);
     target.addEventListener('blur', this.onBlur);
     target.addEventListener('gamepadconnected', this.onGamepadConnected as EventListener);
@@ -158,6 +183,7 @@ export class InputManager {
     if (this.disposed) return;
     this.disposed = true;
     target.removeEventListener('keydown', this.onKeyDown);
+    target.removeEventListener('focusin', this.onFocusIn as EventListener);
     target.removeEventListener('keyup', this.onKeyUp);
     target.removeEventListener('blur', this.onBlur);
     target.removeEventListener('gamepadconnected', this.onGamepadConnected as EventListener);

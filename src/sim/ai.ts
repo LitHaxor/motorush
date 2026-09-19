@@ -59,7 +59,8 @@ export function copParkInput(cop: Racer, targetS: number, targetLateral: number)
 export interface AiWorldView {
   track: Track;
   traffic: TrafficSystem;
-  player: Racer;
+  /** The rider this world revolves around - see World.chased. */
+  chased: Racer;
   racers: readonly Racer[];
   aggressionScale: number;
   rng: Rng;
@@ -124,9 +125,9 @@ function planLane(r: Racer, world: AiWorldView, ai: AiState): void {
     if (cand < -1) score -= 12;
 
     if (r.kind === 'cop') {
-      score -= Math.abs(cand - world.player.lateral) * 6;
+      score -= Math.abs(cand - world.chased.lateral) * 6;
     } else if (ai.attackUrge > 0.5) {
-      const target = world.player;
+      const target = world.chased;
       if (isRiding(target) && Math.abs(target.s - r.s) < 26) {
         score -= Math.abs(cand - target.lateral) * 3.2;
       }
@@ -188,17 +189,17 @@ export function aiInput(r: Racer, world: AiWorldView, dt: number): RacerInput {
   const cap = speedCap(r, world.track);
   let targetSpeed: number;
   if (r.kind === 'cop') {
-    const gap = world.player.s - r.s;
-    if (world.player.state === 'down') {
+    const gap = world.chased.s - r.s;
+    if (world.chased.state === 'down') {
       // Ease up and park next to the rider on the floor rather than
       // overshooting them at 250 km/h.
       targetSpeed = clamp(gap * 1.4, 0, cap);
     } else {
       // Otherwise pace them and close the gap, but not infinitely fast.
-      targetSpeed = Math.min(cap, Math.max(world.player.speed + 7, BIKE.maxSpeed * 0.72));
+      targetSpeed = Math.min(cap, Math.max(world.chased.speed + 7, BIKE.maxSpeed * 0.72));
     }
   } else {
-    targetSpeed = cap * clamp(catchupScale(r, world.player), 0.82, 1.12);
+    targetSpeed = cap * clamp(catchupScale(r, world.chased), 0.82, 1.12);
   }
   input.throttle = r.speed < targetSpeed ? 1 : 0.35;
   input.brake = ai.braking && r.speed > 30 ? 0.55 : 0;
@@ -208,7 +209,7 @@ export function aiInput(r: Racer, world: AiWorldView, dt: number): RacerInput {
   if (r.kind === 'cop') {
     // Follow the player onto whichever side of a fork they took.
     const edge = world.track.edgeAt(r.s) - 1;
-    desired = clamp(world.player.lateral, -edge, edge);
+    desired = clamp(world.chased.lateral, -edge, edge);
   }
   // Counter the corner so the AI does not drift off the outside of every bend.
   const drift = world.track.curvatureAt(r.s) * r.speed * r.speed * 0.23 * BIKE.driftFactor;
