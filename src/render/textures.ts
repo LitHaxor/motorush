@@ -310,3 +310,184 @@ export function makeZebraTexture({ size = 256, bars = 9 } = {}): THREE.CanvasTex
   tex.premultiplyAlpha = false;
   return tex;
 }
+
+// ============================ rider + bike ============================
+// Riders and bikes are the only things the camera ever looks at closely, so
+// they get proper panelled liveries rather than flat colours.
+
+const hex = (c: number): string => `#${c.toString(16).padStart(6, '0')}`;
+
+function shade(color: number, amount: number): string {
+  const r = (color >> 16) & 255;
+  const g = (color >> 8) & 255;
+  const b = color & 255;
+  const f = (v: number) =>
+    Math.round(amount >= 0 ? v + (255 - v) * amount : v * (1 + amount));
+  return `rgb(${f(r)},${f(g)},${f(b)})`;
+}
+
+/**
+ * Racing leathers. The U axis wraps around the limb/torso, so vertical bands
+ * here become stripes running down the outside of the suit.
+ */
+export function makeLeatherTexture(base: number, accent: number, { size = 512 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+
+  ctx.fillStyle = hex(base);
+  ctx.fillRect(0, 0, size, size);
+
+  // Broad accent flash down one side of the suit.
+  ctx.fillStyle = hex(accent);
+  ctx.fillRect(size * 0.06, 0, size * 0.16, size);
+  ctx.fillStyle = shade(accent, -0.35);
+  ctx.fillRect(size * 0.22, 0, size * 0.05, size);
+
+  // Thin twin stripes down the other side.
+  ctx.fillStyle = '#f2f2f0';
+  ctx.fillRect(size * 0.62, 0, size * 0.045, size);
+  ctx.fillRect(size * 0.69, 0, size * 0.025, size);
+
+  // Horizontal panel seams - these become rings around the limbs.
+  ctx.strokeStyle = shade(base, -0.5);
+  ctx.lineWidth = 3;
+  for (const y of [0.2, 0.44, 0.62, 0.84]) {
+    ctx.beginPath();
+    ctx.moveTo(0, y * size);
+    ctx.lineTo(size, y * size);
+    ctx.stroke();
+  }
+
+  // Quilted armour block across the back/shoulders.
+  ctx.fillStyle = shade(base, -0.3);
+  ctx.fillRect(size * 0.3, size * 0.2, size * 0.28, size * 0.24);
+  ctx.strokeStyle = shade(base, -0.55);
+  ctx.lineWidth = 2;
+  for (let i = 1; i < 4; i++) {
+    const y = size * 0.2 + (size * 0.24 * i) / 4;
+    ctx.beginPath();
+    ctx.moveTo(size * 0.3, y);
+    ctx.lineTo(size * 0.58, y);
+    ctx.stroke();
+  }
+
+  // Sponsor block.
+  ctx.fillStyle = '#0e1116';
+  ctx.fillRect(size * 0.34, size * 0.5, size * 0.2, size * 0.075);
+  ctx.fillStyle = '#e8e8e2';
+  ctx.font = `bold ${Math.floor(size * 0.05)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('RB', size * 0.44, size * 0.539);
+
+  grain(ctx, size, size, 12);
+  return finish(c, { aniso: 8 });
+}
+
+/** Helmet: a shell colour, a stripe over the crown and a dark visor band. */
+export function makeHelmetTexture(base: number, accent: number, { size = 256 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+  ctx.fillStyle = hex(base);
+  ctx.fillRect(0, 0, size, size);
+
+  // Stripe over the crown (V runs pole to pole on a sphere).
+  ctx.fillStyle = hex(accent);
+  ctx.fillRect(size * 0.42, 0, size * 0.16, size);
+  ctx.fillStyle = '#f4f4f0';
+  ctx.fillRect(size * 0.585, 0, size * 0.04, size);
+
+  // Visor band around the equator.
+  const vTop = size * 0.4;
+  const vH = size * 0.2;
+  const grad = ctx.createLinearGradient(0, vTop, 0, vTop + vH);
+  grad.addColorStop(0, '#0a0e14');
+  grad.addColorStop(0.5, '#1d2b3d');
+  grad.addColorStop(1, '#070a0f');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, vTop, size, vH);
+  ctx.fillStyle = shade(base, -0.55);
+  ctx.fillRect(0, vTop - size * 0.02, size, size * 0.02);
+  ctx.fillRect(0, vTop + vH, size, size * 0.02);
+
+  grain(ctx, size, size, 8);
+  return finish(c, { aniso: 8 });
+}
+
+/** Glossy bike bodywork: accent flash, number roundel and panel shading. */
+export function makeBikePaintTexture(base: number, accent: number, { size = 512 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+  ctx.fillStyle = hex(base);
+  ctx.fillRect(0, 0, size, size);
+
+  // Diagonal accent sweep.
+  ctx.save();
+  ctx.translate(size * 0.5, size * 0.5);
+  ctx.rotate(-0.42);
+  ctx.fillStyle = hex(accent);
+  ctx.fillRect(-size, -size * 0.14, size * 2, size * 0.2);
+  ctx.fillStyle = '#101319';
+  ctx.fillRect(-size, size * 0.07, size * 2, size * 0.05);
+  ctx.restore();
+
+  // Number roundel.
+  ctx.fillStyle = '#f0f0ea';
+  ctx.beginPath();
+  ctx.arc(size * 0.68, size * 0.36, size * 0.11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#14171d';
+  ctx.font = `bold ${Math.floor(size * 0.15)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('7', size * 0.68, size * 0.37);
+
+  // A soft highlight so flat panels read as glossy.
+  const gloss = ctx.createLinearGradient(0, 0, 0, size);
+  gloss.addColorStop(0, 'rgba(255,255,255,0.22)');
+  gloss.addColorStop(0.45, 'rgba(255,255,255,0.03)');
+  gloss.addColorStop(1, 'rgba(0,0,0,0.25)');
+  ctx.fillStyle = gloss;
+  ctx.fillRect(0, 0, size, size);
+
+  grain(ctx, size, size, 8);
+  return finish(c, { aniso: 8 });
+}
+
+/** Tyre sidewall + tread blocks. */
+export function makeTyreTexture({ size = 256 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+  ctx.fillStyle = '#16171a';
+  ctx.fillRect(0, 0, size, size);
+  // Tread grooves run around the circumference.
+  ctx.strokeStyle = '#0a0b0d';
+  ctx.lineWidth = size * 0.035;
+  for (let i = 0; i < 26; i++) {
+    const y = (i / 26) * size;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(size, y + size * 0.06);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = '#2a2c31';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(size * 0.02, 0, size * 0.96, size);
+  grain(ctx, size, size, 10);
+  return finish(c, { aniso: 8 });
+}
+
+/** Soft elliptical blob for contact shadows under the wheels. */
+export function makeContactShadowTexture({ size = 128 } = {}): THREE.CanvasTexture {
+  const c = canvas(size, size);
+  const ctx = ctx2d(c);
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, 'rgba(0,0,0,0.75)');
+  g.addColorStop(0.45, 'rgba(0,0,0,0.38)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}

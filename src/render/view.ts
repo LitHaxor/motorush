@@ -21,6 +21,8 @@ import {
   type SceneryHandle, type PickupRig, type PedestrianRig,
 } from './scenery';
 import { createBikeRig, disposeBikeGeometry, type BikeRig } from './bikemesh';
+import { createRiderRig, poseRiding, poseRunning, type RiderRig } from './rider';
+import { Ragdoll, BikeTumble, scratchSkeleton } from './ragdoll';
 import { createCarMesh, createCarFromModel, disposeCarGeometry, type CarRig } from './carmesh';
 import { ParticleField, CameraShake } from './effects';
 import { loadGroundTextures, type GroundTextures } from './assets';
@@ -28,17 +30,31 @@ import { loadModels, CAR_MODELS, type ModelLibrary } from './models';
 
 export type QualityLevel = 'low' | 'high';
 
+/** Per-racer crash animation state. */
+interface CrashFx {
+  /** Rigid-body tumble for the bike itself. */
+  tumble: BikeTumble;
+  /** Doubles as fork-dive smoothing while upright, stand-up blend while down. */
+  standT: number;
+  runPhase: number;
+}
+
 export interface GameViewOptions {
   quality?: QualityLevel | 'auto';
 }
 
+const UPRIGHT = new THREE.Quaternion();
+
 const CAM = {
-  back: 7.4,
-  backSpeedGain: 2.6,
-  height: 2.95,
-  lookAhead: 21,
-  baseFov: 66,
-  speedFov: 13,
+  // Tight over-the-shoulder framing: the bike should fill the lower third of
+  // the screen, as it does in the games this is modelled on.
+  back: 4.4,
+  backSpeedGain: 1.5,
+  height: 1.95,
+  lookAhead: 15,
+  lookHeight: 1.15,
+  baseFov: 62,
+  speedFov: 14,
   boostFov: 5,
 };
 
@@ -62,6 +78,11 @@ export class GameView {
   private trackProps: THREE.Group | null = null;
 
   private readonly bikeRigs = new Map<number, BikeRig>();
+  private readonly riderRigs = new Map<number, RiderRig>();
+  private readonly ragdolls = new Map<number, Ragdoll>();
+  private readonly crashFx = new Map<number, CrashFx>();
+  /** Last brake input, used for fork dive and the brake light. */
+  private playerBrake = 0;
   private readonly carRigs = new Map<number, CarRig>();
   private readonly carPool = new Map<string, CarRig[]>();
   private readonly pickupRigs = new Map<number, PickupRig>();
@@ -246,6 +267,13 @@ export class GameView {
       rig.dispose();
     }
     this.bikeRigs.clear();
+    for (const rig of this.riderRigs.values()) {
+      rig.root.removeFromParent();
+      rig.dispose();
+    }
+    this.riderRigs.clear();
+    this.ragdolls.clear();
+    this.crashFx.clear();
     this.downAnim.clear();
 
     for (const rig of this.carRigs.values()) {
@@ -393,6 +421,7 @@ export class GameView {
   // ----------------------------------------------------------------- frame
   render(dt: number, playerInput?: Readonly<RacerInput>): void {
     this.time += dt;
+    this.playerBrake = playerInput?.brake ?? 0;
     this.syncRacers(dt);
     this.syncTraffic();
     this.syncPickups(dt);
@@ -416,131 +445,256 @@ export class GameView {
 
     for (const r of field) {
       live.add(r.id);
-      let rig = this.bikeRigs.get(r.id);
-      if (!rig) {
-        rig = createBikeRig(r.color, r.kind);
-        this.bikeRigs.set(r.id, rig);
-        this.scene.add(rig.root);
+      let bike = this.bikeRigs.get(r.id);
+      if (!bike) {
+        bike = createBikeRig(r.color, r.kind);
+        this.bikeRigs.set(r.id, bike);
+        this.scene.add(bike.root);
+
+        const rider = createRiderRig(r.color, r.kind === 'cop' ? 0xdfe4ea : 0xf0f0ea, r.kind);
+        this.riderRigs.set(r.id, rider);
+        bike.chassis.add(rider.root);
+        rider.root.position.copy(bike.seatOffset);
+
+        this.ragdolls.set(r.id, new Ragdoll());
+        this.crashFx.set(r.id, { tumble: new BikeTumble(), standT: 0, runPhase: 0 });
       }
-      this.poseRacer(rig, r, dt);
+      this.poseRacer(bike, r, dt);
     }
 
     // Retire rigs for racers that have left the field (a cop giving up).
-    for (const [id, rig] of this.bikeRigs) {
+    for (const [id, bike] of this.bikeRigs) {
       if (live.has(id)) continue;
-      this.scene.remove(rig.root);
-      rig.dispose();
+      this.scene.remove(bike.root);
+      bike.dispose();
       this.bikeRigs.delete(id);
+      const rider = this.riderRigs.get(id);
+      if (rider) {
+        rider.root.removeFromParent();
+        rider.dispose();
+        this.riderRigs.delete(id);
+      }
+      this.ragdolls.delete(id);
+      this.crashFx.delete(id);
       this.downAnim.delete(id);
     }
   }
 
-  private poseRacer(rig: BikeRig, r: Racer, dt: number): void {
-    const p = this.world.track.toWorld(r.s, r.lateral, this.tmpSample);
-    rig.root.position.set(p.x, p.y, p.z);
-    rig.root.rotation.y = p.heading;
+  private poseRacer(bike: BikeRig, r: Racer, dt: number): void {
+    const track = this.world.track;
+    const rider = this.riderRigs.get(r.id);
+    const ragdoll = this.ragdolls.get(r.id);
+    const fx = this.crashFx.get(r.id);
+    if (!rider || !ragdoll || !fx) return;
 
-    // Crash animation: ramp a "down" value and lay the bike over on it.
-    const target = r.state === 'down' ? 1 : 0;
-    const down = damp(this.downAnim.get(r.id) ?? 0, target, target > 0 ? 9 : 4, dt);
+    const p = track.toWorld(r.s, r.lateral, this.tmpSample);
+    bike.root.position.set(p.x, p.y, p.z);
+    bike.root.rotation.y = p.heading;
+
+    const wasDown = (this.downAnim.get(r.id) ?? 0) > 0.5;
+    const isDown = r.state === 'down';
+    const down = damp(this.downAnim.get(r.id) ?? 0, isDown ? 1 : 0, isDown ? 12 : 5, dt);
     this.downAnim.set(r.id, down);
 
-    const leanSide = r.lean >= 0 ? 1 : -1;
-    // Positive lean tips the rider to their right, which is -Z rotation.
-    rig.lean.rotation.z = -r.lean * (1 - down) - leanSide * 1.35 * down;
-    rig.lean.position.y = -0.22 * down;
-    rig.lean.rotation.x = 0.25 * down;
-    rig.rider.visible = true;
+    // ---------------------------------------------------------- the bike
+    bike.frontWheel.rotation.x = -r.wheelAngle;
+    bike.rearWheel.rotation.x = -r.wheelAngle;
 
-    // --- rider, on or off the bike --------------------------------------
-    const pivot = rig.riderPivot;
-    if (r.state === 'down') {
-      // Thrown clear: the rider ends up down the road from their bike and has
-      // to go and fetch it. Forward is local -Z.
-      pivot.position.z = -r.riderThrow;
-      if (r.riderPhase === 'tumble') {
-        pivot.position.y = -0.52;
-        pivot.rotation.set(this.time * 11 + r.id, 0, this.time * 5);
-      } else {
-        // Up and running back, with a bit of a bob on.
-        pivot.position.y = -0.3 + Math.abs(Math.sin(this.time * 11)) * 0.07;
-        pivot.rotation.set(0.18, 0, 0);
+    if (isDown) {
+      // Real rigid-body tumble: gravity, spin, bounce, then grind to a stop.
+      fx.tumble.step(dt);
+      if (r.riderPhase === 'lifting' || r.riderPhase === 'mounting') {
+        // Being hauled back onto its wheels.
+        fx.tumble.quaternion.slerp(UPRIGHT, Math.min(1, dt * 4.5));
+        fx.tumble.offset.multiplyScalar(Math.max(0, 1 - dt * 5));
       }
+      bike.chassis.position.copy(fx.tumble.offset);
+      bike.chassis.quaternion.copy(fx.tumble.quaternion);
+      bike.setDive(0);
+      // No contact patch while it is cartwheeling through the air.
+      const grounded = fx.tumble.offset.y < 0.35;
+      for (const blob of bike.contactShadows) blob.visible = grounded;
     } else {
-      pivot.position.set(0, 0, 0);
-      pivot.rotation.set(0, 0, -r.lean);
+      for (const blob of bike.contactShadows) blob.visible = true;
+      bike.chassis.position.set(0, 0, 0);
+      bike.chassis.quaternion.identity();
+      bike.chassis.rotation.x = 0;
+      bike.chassis.rotation.y = 0;
+      // Lean: positive lean tips to the rider's right, which is -Z rotation.
+      bike.chassis.rotation.z = -r.lean * (1 - down);
+      // Fork dive under braking and from the weight transfer of hard accel.
+      const braking = r.id === this.world.player.id ? this.playerBrake : 0;
+      const dive = clamp(braking * 0.85 + (r.stagger > 0 ? 0.3 : 0), 0, 1);
+      // Smooth the travel so the forks settle rather than snapping.
+      fx.standT = damp(fx.standT, dive, 9, dt);
+      bike.setDive(fx.standT);
+      // Counter-steer the front wheel into the corner.
+      bike.steering.rotation.y = clamp(-r.lean * 0.35, -0.3, 0.3);
     }
 
-    rig.frontWheel.rotation.x = -r.wheelAngle;
-    rig.rearWheel.rotation.x = -r.wheelAngle;
-
-    // --- combat pose ---------------------------------------------------
-    // A swing is a whole-body action: the rider twists, leans out over the
-    // bars and reaches across, rather than just waving an arm.
-    const rest = rig.armRest;
-    rig.armL.rotation.set(rest.x, 0, rest.z);
-    rig.armR.rotation.set(rest.x, 0, -rest.z);
-
-    let twist = 0;
-    let bodyLean = 0;
-    let shift = 0;
-
-    const swing = swingProgress(r);
-    const dir = r.attackDir;
-    if (swing > 0 && dir !== 0) {
-      // Snap out fast, draw back slower - reads much better at speed.
-      const OUT = 0.42;
-      const phase = swing < OUT ? swing / OUT : 1 - (swing - OUT) / (1 - OUT);
-      const reach = Math.sin(phase * Math.PI * 0.5);
-
-      const arm = dir > 0 ? rig.armR : rig.armL;
-      arm.rotation.x = rest.x + reach * 1.2;
-      arm.rotation.y = -dir * reach * 1.75;
-      arm.rotation.z = (dir > 0 ? -rest.z : rest.z) - dir * reach * 1.05;
-
-      twist = -dir * reach * 0.5;
-      bodyLean = -dir * reach * 0.34;
-      shift = dir * reach * 0.18;
-    }
-
-    // Getting hit throws you the other way.
-    if (r.stagger > 0) {
-      const k = r.stagger / COMBAT.staggerTime;
-      const away = Math.sign(r.staggerPush) || 1;
-      bodyLean += away * k * 0.38;
-      shift += away * k * 0.12;
-      twist += away * k * 0.2;
-    }
-
-    rig.rider.rotation.y = twist;
-    rig.rider.rotation.z = bodyLean;
-    rig.rider.position.x = shift;
-
-    const armed = r.weapon !== 'fist';
-    rig.clubL.visible = armed && dir < 0;
-    rig.clubR.visible = armed && dir >= 0;
-
-    // --- surface FX ------------------------------------------------------
-    // Only spend particles on riders the camera can actually see; otherwise
-    // bikes far up the road throw sparks at nobody.
-    const visible = Math.abs(r.s - this.world.player.s) < 70;
-    if (visible) {
-      if (r.state === 'ride' && this.world.track.isOffRoad(r.lateral) && r.speed > 6 && Math.random() < 0.55) {
-        this.particles.dust(this.worldPos(r, 0.15), 2);
-      } else if (r.state === 'down' && r.speed > 5 && Math.random() < 0.5) {
-        this.particles.sparks(this.worldPos(r, 0.25), 3, 0xffb066);
-      }
-    }
-
-    if (rig.lightBar) {
-      // Alternating red/blue strobe.
+    if (bike.lightBar) {
       const phase = Math.floor(this.time * 6) % 2;
-      const lamps = rig.lightBar.children as THREE.Mesh[];
+      const lamps = bike.lightBar.children as THREE.Mesh[];
       lamps.forEach((lamp, i) => {
         const m = lamp.material as THREE.MeshStandardMaterial;
         m.emissiveIntensity = i === phase ? 4.5 : 0.25;
       });
     }
+
+    // --------------------------------------------------------- the rider
+    if (isDown && !wasDown) {
+      // Just went down: snapshot the rider in world space and throw them.
+      this.launchRagdoll(r, bike, rider, ragdoll, fx);
+    }
+
+    if (isDown) {
+      if (r.riderPhase === 'tumble' && ragdoll.active) {
+        ragdoll.step(dt, p.y);
+        ragdoll.writeInto(rider.skeleton);
+        rider.apply();
+      } else {
+        // Up, back to the bike, pick it up, get on.
+        this.poseRecoveringRider(r, rider, ragdoll, fx, dt);
+      }
+    } else {
+      if (rider.root.parent !== bike.chassis) {
+        // Back on board.
+        rider.root.removeFromParent();
+        bike.chassis.add(rider.root);
+        ragdoll.stop();
+        fx.tumble.stop();
+        fx.standT = 0;
+      }
+      rider.root.position.copy(bike.seatOffset);
+      rider.root.rotation.set(0, 0, 0);
+      rider.root.scale.setScalar(1);
+
+      const speedNorm = clamp(r.speed / BIKE.maxSpeed, 0, 1);
+      const braking = r.id === this.world.player.id ? this.playerBrake : 0;
+      poseRiding(rider.skeleton, {
+        tuck: speedNorm * speedNorm,
+        lean: clamp(r.lean / BIKE.leanMax, -1, 1),
+        brake: braking,
+        swingDir: r.attackDir,
+        swing: swingProgress(r),
+      });
+      rider.apply();
+      rider.setClubVisible(r.weapon !== 'fist', r.attackDir);
+    }
+
+    // --- surface FX ------------------------------------------------------
+    // Only spend particles on riders the camera can actually see.
+    const visible = Math.abs(r.s - this.world.player.s) < 70;
+    if (visible) {
+      if (r.state === 'ride' && track.isOffRoad(r.lateral) && r.speed > 6 && Math.random() < 0.55) {
+        this.particles.dust(this.worldPos(r, 0.15), 2);
+      } else if (isDown && r.speed > 5 && Math.random() < 0.6) {
+        this.particles.sparks(this.worldPos(r, 0.25), 3, 0xffb066);
+      }
+    }
+  }
+
+  /** Detach the rider and hand them to the physics solver. */
+  private launchRagdoll(
+    r: Racer,
+    bike: BikeRig,
+    rider: RiderRig,
+    ragdoll: Ragdoll,
+    fx: CrashFx,
+  ): void {
+    // Snapshot the current pose in world space before re-parenting.
+    rider.root.updateWorldMatrix(true, false);
+    for (let i = 0; i < rider.skeleton.length; i++) {
+      scratchSkeleton[i].copy(rider.skeleton[i]).applyMatrix4(rider.root.matrixWorld);
+    }
+    rider.root.removeFromParent();
+    this.scene.add(rider.root);
+    rider.root.position.set(0, 0, 0);
+    rider.root.rotation.set(0, 0, 0);
+
+    // Inherit the bike's velocity, plus an upward kick and a tumble.
+    const heading = this.world.track.headingAt(r.s);
+    const severity = 0.4 + r.downSeverity * 0.6;
+    this.tmpVec.set(
+      -Math.sin(heading) * r.speed,
+      3.2 + severity * 4.5,
+      -Math.cos(heading) * r.speed,
+    );
+    this.tmpVec2.set(
+      (Math.random() - 0.5) * 9 * severity,
+      (Math.random() - 0.5) * 5 * severity,
+      (Math.random() - 0.5) * 9 * severity,
+    );
+    ragdoll.launch(scratchSkeleton, this.tmpVec, this.tmpVec2);
+    ragdoll.writeInto(rider.skeleton);
+    rider.apply();
+    rider.setClubVisible(false, 0);
+
+    // Kick the bike into its own tumble.
+    fx.tumble.launch(r.downSeverity, r.speed);
+    fx.standT = 0;
+    fx.runPhase = 0;
+  }
+
+  /** Rider is up: walk back, haul the bike upright, climb on. */
+  private poseRecoveringRider(
+    r: Racer,
+    rider: RiderRig,
+    ragdoll: Ragdoll,
+    fx: CrashFx,
+    dt: number,
+  ): void {
+    if (ragdoll.active) ragdoll.stop();
+    if (rider.root.parent !== this.scene) {
+      rider.root.removeFromParent();
+      this.scene.add(rider.root);
+    }
+
+    // The simulation owns where they are; mirror it exactly so the two never
+    // drift apart.
+    const at = this.world.track.toWorld(
+      r.s + r.riderThrow,
+      r.lateral + r.riderLateralThrow,
+      this.tmpSample,
+    );
+    rider.root.position.set(at.x, at.y, at.z);
+    // Facing the bike they are heading for.
+    rider.root.rotation.set(0, at.heading + Math.PI, 0);
+
+    switch (r.riderPhase) {
+      case 'standing':
+        // Getting off the floor: blend up out of the crouch, no stride yet.
+        fx.standT = Math.min(1, fx.standT + dt * 2.2);
+        poseRunning(rider.skeleton, 0, fx.standT);
+        break;
+
+      case 'running':
+        fx.standT = Math.min(1, fx.standT + dt * 3.2);
+        fx.runPhase += dt * 11;
+        poseRunning(rider.skeleton, fx.runPhase, fx.standT);
+        break;
+
+      case 'lifting': {
+        // Standing over the bike, heaving it upright: crouch down and pull up.
+        fx.runPhase += dt * 2;
+        const pull = 0.5 - Math.cos(Math.min(Math.PI, fx.runPhase)) * 0.5;
+        poseRunning(rider.skeleton, 0, 0.45 + pull * 0.5);
+        rider.root.rotation.y = at.heading + Math.PI * 0.5;
+        break;
+      }
+
+      case 'mounting':
+        // Leg over: rise into the riding crouch as they settle onto the seat.
+        fx.runPhase += dt;
+        poseRunning(rider.skeleton, 0, 1);
+        rider.root.rotation.y = at.heading + Math.PI * 0.25;
+        break;
+
+      default:
+        poseRunning(rider.skeleton, fx.runPhase, fx.standT);
+        break;
+    }
+    rider.apply();
   }
 
   private syncTraffic(): void {
@@ -691,7 +845,7 @@ export class GameView {
     this.camera.position.set(behind.x, behind.y + height, behind.z);
 
     const ahead = track.toWorld(p.s + CAM.lookAhead, p.lateral * 0.55, this.tmpSample);
-    this.tmpVec2.set(ahead.x, ahead.y + 1.5, ahead.z);
+    this.tmpVec2.set(ahead.x, ahead.y + CAM.lookHeight, ahead.z);
 
     const shakeOffset = this.shake.offset(this.tmpVec);
     this.camera.position.add(shakeOffset);

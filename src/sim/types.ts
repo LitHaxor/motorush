@@ -3,8 +3,12 @@
 
 export type RacerKind = 'player' | 'rival' | 'cop';
 export type RacerState = 'ride' | 'down' | 'finished' | 'busted';
-/** While down: thrown clear and tumbling, or up and running back to the bike. */
-export type RiderPhase = 'tumble' | 'recover';
+/**
+ * What a downed rider is doing. The whole sequence, in order: hit the deck and
+ * slide (distance set by how fast you were going), pick yourself up, walk back
+ * to the bike, haul it upright, get on, ride away.
+ */
+export type RiderPhase = 'tumble' | 'standing' | 'running' | 'lifting' | 'mounting';
 export type WeaponType = 'fist' | 'club' | 'baton';
 export type PickupKind = 'health' | 'club' | 'boost';
 export type RaceState = 'countdown' | 'racing' | 'finished' | 'busted' | 'wasted';
@@ -109,6 +113,10 @@ export interface Car {
   active: boolean;
   swerve: number;
   swervePhase: number;
+  /** Speed the driver wants to travel at, before braking. */
+  cruise: number;
+  /** 0..1 how hard they are currently on the brakes. */
+  brake: number;
 }
 
 export interface Pickup {

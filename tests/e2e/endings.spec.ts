@@ -65,12 +65,17 @@ test.describe('end screens', () => {
       const w = api.world()!;
       const cop = w.spawnCop();
       // Put a car head-on in front of them: a real crash, through the real
-      // collision path, rather than poking the health value.
+      // collision path, rather than poking the health value. The lane index
+      // matters - traffic.step() recomputes `lateral` from it every tick, so
+      // setting `lateral` alone would just be overwritten.
       const car = w.traffic.cars[0];
       car.active = true;
       car.dir = -1;
       car.speed = 28;
+      car.laneIndex = 2;
       car.lateral = w.player.lateral;
+      car.swerve = 0;
+      w.player.lateral = 2.25;
       car.s = w.player.s + 6;
       for (let i = 0; i < 80 && api.mode() === 'racing'; i++) {
         cop.s = w.player.s - 6;

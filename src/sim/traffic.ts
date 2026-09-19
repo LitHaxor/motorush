@@ -56,6 +56,8 @@ export class TrafficSystem {
         active: false,
         swerve: 0,
         swervePhase: 0,
+        cruise: 0,
+        brake: 0,
       });
     }
   }
@@ -102,6 +104,8 @@ export class TrafficSystem {
     car.laneIndex = laneIndex;
     car.lateral = TRACK.laneCentres[laneIndex] + rng.range(-0.55, 0.55);
     car.speed = rng.range(range[0], range[1]) * (heavy ? 0.78 : 1);
+    car.cruise = car.speed;
+    car.brake = 0;
     car.type = type;
     car.color = rng.pick(CAR_COLORS);
     car.active = true;
@@ -110,7 +114,7 @@ export class TrafficSystem {
     return car;
   }
 
-  step(dt: number, playerS: number, elapsed: number): void {
+  step(dt: number, playerS: number, elapsed: number, racers: readonly Racer[] = []): void {
     const ahead = TRAFFIC.spawnAhead + 90;
     const behind = TRAFFIC.spawnBehind + 90;
     for (const car of this.cars) {
@@ -118,6 +122,35 @@ export class TrafficSystem {
         this.respawn(car, playerS);
         continue;
       }
+
+      // Drivers are not suicidal: a car coming up behind a bike in its lane
+      // lifts off rather than driving straight through the back of it.
+      car.brake = 0;
+      if (car.dir === 1) {
+        for (const r of racers) {
+          if (!isRiding(r) && r.state !== 'down') continue;
+          if (Math.abs(r.lateral - car.lateral) > TRAFFIC.avoidWidth) continue;
+          const gap = r.s - car.s;
+          if (gap < 0 || gap > TRAFFIC.lookAhead) continue;
+          // Only brake if we are actually catching them.
+          const closing = car.speed - r.speed;
+          if (closing <= 0) continue;
+          // How hard would we have to brake to shed the closing speed in the
+          // space available? A linear ramp is not enough - it lets the car
+          // sail straight into the back of a slow rider.
+          const room = Math.max(gap - TRAFFIC.followGap, 0.25);
+          const needed = (closing * closing) / (2 * room);
+          car.brake = Math.max(car.brake, clamp(needed / TRAFFIC.brakeDecel, 0, 1));
+        }
+      }
+      if (car.brake > 0) {
+        const target = car.cruise * (1 - car.brake);
+        car.speed = Math.max(0, car.speed - TRAFFIC.brakeDecel * car.brake * dt);
+        if (car.speed < target) car.speed = target;
+      } else if (car.speed < car.cruise) {
+        car.speed = Math.min(car.cruise, car.speed + TRAFFIC.accel * dt);
+      }
+
       car.s += car.speed * car.dir * dt;
       // Lazy lane drift so traffic does not look like it is on rails.
       const lane = TRACK.laneCentres[car.laneIndex];

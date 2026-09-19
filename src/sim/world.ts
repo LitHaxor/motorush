@@ -253,7 +253,8 @@ export class World implements AiWorldView {
       // Cuffed either when you remount, or after they have stood over you long
       // enough - you cannot simply lie there and wait them out.
       this.arrestTimer += dt;
-      if (player.state === 'ride' || this.arrestTimer > POLICE.arrestPatience) {
+      const backAtTheBike = player.riderPhase === 'lifting' || player.riderPhase === 'mounting';
+      if (player.state === 'ride' || backAtTheBike || this.arrestTimer > POLICE.arrestPatience) {
         player.state = 'busted';
         this.endRace('busted', events);
         return;
@@ -356,7 +357,7 @@ export class World implements AiWorldView {
         this.addHeat(e.victim.kind === 'cop' ? POLICE.copHitHeat : POLICE.hitHeat);
       }
     }
-    this.traffic.step(dt, this.player.s, this.elapsed);
+    this.traffic.step(dt, this.player.s, this.elapsed, field);
     events.push(...collideWithTraffic(field, this.traffic));
     events.push(...collideRacers(field));
     events.push(...collectPickups(field, this.pickups));

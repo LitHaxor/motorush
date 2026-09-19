@@ -222,3 +222,83 @@ describe('physics: going down and getting back up', () => {
     expect(passive).toBeLessThan(6);
   });
 });
+
+describe('physics: the crash recovery sequence', () => {
+  /** Record the order of rider phases through a whole get-off. */
+  const phaseOrder = (speed: number, throttle = 0) => {
+    const r = createRacer({ id: 1, speed, s: 400 });
+    knockDown(r, 0.8);
+    const seen: string[] = [r.riderPhase];
+    for (let i = 0; i < 60 * 25; i++) {
+      stepRacer(r, track, input({ throttle }), 1 / 60);
+      // Stop before recording the reset that remount() does for the next crash.
+      if (r.state === 'ride') break;
+      if (seen[seen.length - 1] !== r.riderPhase) seen.push(r.riderPhase);
+    }
+    return { seen, racer: r };
+  };
+
+  it('runs fall -> stand -> walk back -> lift the bike -> mount, in order', () => {
+    const { seen, racer } = phaseOrder(45);
+    expect(seen).toEqual(['tumble', 'standing', 'running', 'lifting', 'mounting']);
+    expect(racer.state).toBe('ride');
+  });
+
+  it('slides further, and so takes longer, the faster the crash', () => {
+    const timeFor = (speed: number) => {
+      const r = createRacer({ id: 1, speed, s: 400 });
+      knockDown(r, 1);
+      let t = 0;
+      for (let i = 0; i < 60 * 30; i++) {
+        t += 1 / 60;
+        stepRacer(r, track, input({ throttle: 0 }), 1 / 60);
+        if (r.state === 'ride') break;
+      }
+      return t;
+    };
+    const slow = timeFor(12);
+    const fast = timeFor(68);
+    expect(fast).toBeGreaterThan(slow);
+    // But a get-off never costs an unreasonable amount of time.
+    expect(fast).toBeLessThan(12);
+  });
+
+  it('throws the rider a distance set by speed, not at random', () => {
+    const throwFor = (speed: number) => {
+      const r = createRacer({ id: 1, speed });
+      knockDown(r, 1);
+      return r.riderThrowTarget;
+    };
+    // Deterministic: the same crash speed always gives the same distance.
+    expect(throwFor(50)).toBe(throwFor(50));
+    expect(throwFor(65)).toBeGreaterThan(throwFor(20));
+  });
+
+  it('reaches the bike before trying to pick it up', () => {
+    const r = createRacer({ id: 1, speed: 60, s: 400 });
+    knockDown(r, 1);
+    for (let i = 0; i < 60 * 30; i++) {
+      stepRacer(r, track, input({ throttle: 0 }), 1 / 60);
+      if (r.riderPhase === 'lifting') break;
+    }
+    expect(r.riderPhase).toBe('lifting');
+    // You cannot pick up a bike you are not standing next to.
+    expect(r.riderThrow).toBeLessThanOrEqual(0.05);
+    expect(Math.abs(r.riderLateralThrow)).toBeLessThan(0.4);
+  });
+
+  it('lets the player hurry every stage by holding the throttle', () => {
+    const timeFor = (throttle: number) => {
+      const r = createRacer({ id: 1, speed: 50, s: 400 });
+      knockDown(r, 0.8);
+      let t = 0;
+      for (let i = 0; i < 60 * 30; i++) {
+        t += 1 / 60;
+        stepRacer(r, track, input({ throttle }), 1 / 60);
+        if (r.state === 'ride') break;
+      }
+      return t;
+    };
+    expect(timeFor(1)).toBeLessThan(timeFor(0));
+  });
+});

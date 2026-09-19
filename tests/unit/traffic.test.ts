@@ -56,6 +56,52 @@ describe('TrafficSystem', () => {
     }
   });
 
+  it('brakes rather than driving through the back of a rider', () => {
+    const sys = build();
+    const car = only(sys, { s: 100, lateral: 2, speed: 30, dir: 1 });
+    car.cruise = 30;
+    // A slow rider a short way ahead, in the same lane.
+    const r = createRacer({ id: 1, s: 118, lateral: 2, speed: 8 });
+    let braked = false;
+    for (let i = 0; i < 120; i++) {
+      // Rider crawls along; the car must tuck in behind rather than run them over.
+      r.s += 8 * (1 / 60);
+      sys.step(1 / 60, r.s, i / 60, [r]);
+      if (car.brake > 0) braked = true;
+    }
+    expect(braked).toBe(true);
+    expect(car.speed).toBeLessThan(30);
+    // Never gets past the rider's back wheel.
+    expect(car.s).toBeLessThan(r.s);
+  });
+
+  it('does not brake for riders in another lane', () => {
+    const sys = build();
+    const car = only(sys, { s: 100, lateral: -6, speed: 30, dir: 1 });
+    car.cruise = 30;
+    const r = createRacer({ id: 1, s: 118, lateral: 6, speed: 8 });
+    for (let i = 0; i < 30; i++) sys.step(1 / 60, r.s, i / 60, [r]);
+    expect(car.brake).toBe(0);
+    expect(car.speed).toBeCloseTo(30, 1);
+  });
+
+  it('does not brake for oncoming riders - they pass on the other side', () => {
+    const sys = build();
+    const car = only(sys, { s: 100, lateral: -6, speed: 28, dir: -1 });
+    car.cruise = 28;
+    const r = createRacer({ id: 1, s: 90, lateral: -6, speed: 60 });
+    for (let i = 0; i < 20; i++) sys.step(1 / 60, r.s, i / 60, [r]);
+    expect(car.brake).toBe(0);
+  });
+
+  it('gets back up to speed once the road is clear', () => {
+    const sys = build();
+    const car = only(sys, { s: 100, lateral: 2, speed: 12, dir: 1 });
+    car.cruise = 28;
+    for (let i = 0; i < 300; i++) sys.step(1 / 60, 100, i / 60, []);
+    expect(car.speed).toBeCloseTo(28, 0);
+  });
+
   it('reports signed velocity for oncoming cars', () => {
     const t = build();
     const car = only(t, { dir: -1, speed: 25 });

@@ -91,6 +91,12 @@ export const CRASH = {
   throwMax: 16,
   /** How fast the rider runs back to the bike. */
   riderRunSpeed: 5.5,
+  /** Getting back on your feet. */
+  standTime: 0.55,
+  /** Hauling the bike back upright. */
+  liftTime: 0.85,
+  /** Swinging a leg over and settling. */
+  mountTime: 0.45,
   /** How far sideways a heavy crash throws the rider - over the guardrail. */
   lateralThrow: 3.4,
   /**
@@ -121,6 +127,14 @@ export const TRAFFIC = {
   oncomingSpeed: [21, 33] as [number, number],
   halfLength: 2.45,
   halfWidth: 1.05,
+  /** How far ahead a driver looks for a bike in their lane. */
+  lookAhead: 34,
+  /** Lateral band a driver treats as "in my lane". */
+  avoidWidth: 2.2,
+  brakeDecel: 18,
+  accel: 5,
+  /** Gap a driver tries to leave behind a rider, in metres. */
+  followGap: 7,
 };
 
 export const RIVALS = {
@@ -131,7 +145,7 @@ export const RIVALS = {
     'HAWK', 'MERCY', 'DIESEL', 'KOJI', 'RAZOR',
   ],
   /** Per-rival skill floor/ceiling as a fraction of max speed. */
-  skill: [0.94, 1.03] as [number, number],
+  skill: [0.97, 1.06] as [number, number],
   aggression: [0.25, 0.85] as [number, number],
   /** Rubber-band: how much faster rivals go when trailing badly. */
   catchupGain: 0.1,
@@ -159,9 +173,9 @@ export interface DifficultyPreset {
 }
 
 export const DIFFICULTY: Record<DifficultyKey, DifficultyPreset> = {
-  easy: { label: 'ROOKIE', rivalSkill: 0.95, traffic: 0.7, aggression: 0.6, distance: 3800, police: 1.4 },
+  easy: { label: 'ROOKIE', rivalSkill: 0.92, traffic: 0.7, aggression: 0.6, distance: 3800, police: 1.4 },
   normal: { label: 'RASHER', rivalSkill: 1.02, traffic: 1.0, aggression: 1.0, distance: 5200, police: 1.8 },
-  hard: { label: 'OUTLAW', rivalSkill: 1.05, traffic: 1.4, aggression: 1.5, distance: 6600, police: 2.2 },
+  hard: { label: 'OUTLAW', rivalSkill: 1.035, traffic: 1.4, aggression: 1.5, distance: 6600, police: 2.2 },
 };
 
 export const POLICE = {

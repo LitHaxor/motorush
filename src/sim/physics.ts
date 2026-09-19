@@ -75,22 +75,55 @@ export function stepRacer(
     r.speed = Math.max(0, r.speed - GRAVITY * track.slopeAt(r.s) * BIKE.slopeFactor * dt);
     r.s += r.speed * dt;
 
-    if (r.riderPhase === 'tumble') {
-      // Thrown clear, still rolling.
-      r.riderThrow = damp(r.riderThrow, r.riderThrowTarget, 5, dt);
-      r.downTimer -= dt;
-      if (r.downTimer <= 0) r.riderPhase = 'recover';
-    } else {
-      // Up and running back to the bike. Holding the throttle makes them
-      // hustle, so how long you lose is partly in the player's hands.
-      const hustle = 1 + clamp(input.throttle ?? 0, 0, 1) * CRASH.hustleBonus;
-      r.riderThrow -= CRASH.riderRunSpeed * hustle * dt;
-      // Climb back over the barrier on the way.
-      r.riderLateralThrow = damp(r.riderLateralThrow, 0, 3 * hustle, dt);
-      if (r.riderThrow <= 0.05) {
-        remount(r, track);
-        events.push({ type: 'remount', racer: r });
-      }
+    // Holding the throttle hurries every stage of getting going again.
+    const hustle = 1 + clamp(input.throttle ?? 0, 0, 1) * CRASH.hustleBonus;
+
+    switch (r.riderPhase) {
+      case 'tumble':
+        // Down and sliding. How far is set by the crash speed, not by luck.
+        r.riderThrow = damp(r.riderThrow, r.riderThrowTarget, 5, dt);
+        r.downTimer -= dt;
+        if (r.downTimer <= 0) {
+          r.riderPhase = 'standing';
+          r.downTimer = CRASH.standTime;
+        }
+        break;
+
+      case 'standing':
+        // Picking yourself up off the tarmac.
+        r.downTimer -= dt * hustle;
+        if (r.downTimer <= 0) r.riderPhase = 'running';
+        break;
+
+      case 'running':
+        // Back to the bike on foot.
+        r.riderThrow -= CRASH.riderRunSpeed * hustle * dt;
+        r.riderLateralThrow = damp(r.riderLateralThrow, 0, 3 * hustle, dt);
+        if (r.riderThrow <= 0.05) {
+          r.riderThrow = 0;
+          r.riderLateralThrow = 0;
+          r.riderPhase = 'lifting';
+          r.downTimer = CRASH.liftTime;
+        }
+        break;
+
+      case 'lifting':
+        // Hauling it back onto two wheels.
+        r.downTimer -= dt * hustle;
+        if (r.downTimer <= 0) {
+          r.riderPhase = 'mounting';
+          r.downTimer = CRASH.mountTime;
+        }
+        break;
+
+      case 'mounting':
+        // Leg over, and away.
+        r.downTimer -= dt * hustle;
+        if (r.downTimer <= 0) {
+          remount(r, track);
+          events.push({ type: 'remount', racer: r });
+        }
+        break;
     }
     return events;
   }
