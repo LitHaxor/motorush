@@ -16,6 +16,7 @@ import {
   leave,
   randomSeed,
   readSeats,
+  resetRace,
   startRace,
   watchRoom,
 } from '../../src/net/lobby';
@@ -300,6 +301,65 @@ describe('dropping the flag', () => {
     await startRace(rider('alice'), room);
     await new Promise((r) => setTimeout(r, 200));
     expect(await joinByCode(rider('bob'), 'bob', 'BOB', room.code)).toBeNull();
+  });
+});
+
+describe('going again in the same room', () => {
+  it('puts the room back in the lobby, on a new track', async () => {
+    const room = await createRoom(rider('alice'), 'alice', 'ALICE');
+    const friend = (await joinByCode(rider('bob'), 'bob', 'BOB', room.code))!;
+    await startRace(rider('alice'), room);
+
+    const seen: Array<{ started: boolean; seed: number }> = [];
+    const stop = watchRoom(rider('bob'), room.id, (state) => {
+      if (state) seen.push({ started: state.started, seed: state.seed });
+    });
+    await waitFor(() => seen.length > 0);
+    expect(seen.at(-1)!.started).toBe(true);
+
+    await resetRace(rider('alice'), room, 4242);
+    await waitFor(() => seen.at(-1)!.started === false);
+    stop();
+
+    // Waiting again, on a road nobody has just ridden - and the seat Bob took
+    // is still his, which is the whole point of staying in the room.
+    expect(seen.at(-1)!.seed).toBe(4242);
+    expect(friend.slot).toBe(FIRST_SEAT - 1);
+  });
+
+  it('lets the owner drop the flag a second time', async () => {
+    const room = await createRoom(rider('alice'), 'alice', 'ALICE');
+    await startRace(rider('alice'), room);
+    const first = (await raw((db) => get(ref(db, `lobbies/${room.id}/startedAt`)))).val();
+
+    await resetRace(rider('alice'), room, 77);
+    await startRace(rider('alice'), room);
+
+    const second = (await raw((db) => get(ref(db, `lobbies/${room.id}/startedAt`)))).val();
+    // A different race, so every rider can tell it from the one just run.
+    expect(second).not.toBe(first);
+    expect(typeof second).toBe('number');
+  });
+
+  it('opens the room back up to anyone holding the code', async () => {
+    const room = await createRoom(rider('alice'), 'alice', 'ALICE');
+    await startRace(rider('alice'), room);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await joinByCode(rider('late'), 'late', 'LATE', room.code)).toBeNull();
+
+    await resetRace(rider('alice'), room, 88);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await joinByCode(rider('late'), 'late', 'LATE', room.code)).not.toBeNull();
+  });
+
+  it('is a no-op for a guest', async () => {
+    const room = await createRoom(rider('alice'), 'alice', 'ALICE');
+    const friend = (await joinByCode(rider('bob'), 'bob', 'BOB', room.code))!;
+    await startRace(rider('alice'), room);
+
+    await resetRace(rider('bob'), friend, 99);
+    const snap = await raw((db) => get(ref(db, `lobbies/${room.id}/startedAt`)));
+    expect(snap.exists()).toBe(true);
   });
 });
 

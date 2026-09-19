@@ -226,7 +226,7 @@ describe('state flowing downhill', () => {
     peds: [],
     aroundS: 0,
     time: 5.0,
-    race: 'racing' as const,
+    phase: 'racing' as const,
     countdown: 0,
   };
 
@@ -239,7 +239,7 @@ describe('state flowing downhill', () => {
 
     await waitFor(() => guest.sample(1000) !== null);
     const drawn = guest.sample(1000)!;
-    expect(drawn.race).toBe('racing');
+    expect(drawn.phase).toBe('racing');
     expect(drawn.racers[0]).toMatchObject({ id: 0, s: 10 });
     // Traffic rides along in the same frame, so a guest sees the same cars.
     expect(drawn.cars[0]).toMatchObject({ id: 5, s: 300, type: 'sedan' });

@@ -290,12 +290,29 @@ describe('dropping the flag', () => {
     await assertFails(set(ref(as(ALICE), 'lobbies/l1/startedAt'), 1));
   });
 
-  it('cannot be rewound once set', async () => {
-    // Restarting everyone else's race from under them is not a thing a host
-    // should be able to do by accident or otherwise.
+  it('lets the host put the room back in the lobby for a rematch', async () => {
+    // Clearing the flag is what makes a second race in the same room possible.
+    // Only the host can: the lobby root refuses everybody else, so a rider
+    // still cannot restart a race from under the field.
     await seed('lobbies/l1/startedAt', 1700000000000);
-    await assertFails(
+    await assertSucceeds(remove(ref(as(ALICE), 'lobbies/l1/startedAt')));
+    await assertSucceeds(
       set(ref(as(ALICE), 'lobbies/l1/startedAt'), { '.sv': 'timestamp' }),
     );
+  });
+
+  it('stops a guest clearing it', async () => {
+    await seed('lobbies/l1/startedAt', 1700000000000);
+    await assertFails(remove(ref(as(BOB), 'lobbies/l1/startedAt')));
+  });
+
+  it('still refuses a back-dated restart', async () => {
+    await seed('lobbies/l1/startedAt', 1700000000000);
+    await assertFails(set(ref(as(ALICE), 'lobbies/l1/startedAt'), 1));
+  });
+
+  it('lets the host roll a fresh track for the rematch', async () => {
+    await assertSucceeds(set(ref(as(ALICE), 'lobbies/l1/seed'), 4242));
+    await assertFails(set(ref(as(BOB), 'lobbies/l1/seed'), 4242));
   });
 });

@@ -10,7 +10,7 @@ import type { Database } from 'firebase/database';
 import type { RacerInput } from '../sim/types';
 import {
   type LobbyHandle, type RoomState, type Seat,
-  createRoom, joinByCode, joinOrHost, leave, setOpen, startRace, watchRoom,
+  createRoom, joinByCode, joinOrHost, leave, randomSeed, resetRace, setOpen, startRace, watchRoom,
 } from './lobby';
 import { type PeerLink, openPeerLink } from './peer';
 import { INPUT_HZ, SNAPSHOT_HZ, type StateMessage, decode, encode } from './protocol';
@@ -99,12 +99,17 @@ export interface BroadcastSource {
   /** Where to centre the pedestrian cull - the host's own rider. */
   aroundS: number;
   time: number;
-  race: StateMessage['race'];
+  /** How the race as a whole is going, never how the host's own race is going. */
+  phase: StateMessage['phase'];
   countdown: number;
 }
 
 export interface OnlineRace {
   readonly lobbyId: string;
+  /**
+   * The track everyone builds. Read from the room rather than remembered from
+   * when we joined, because a rematch rolls a new one.
+   */
   readonly seed: number;
   /** Our seat, which is the Racer.id we drive. */
   readonly seat: number;
@@ -117,8 +122,19 @@ export interface OnlineRace {
   seats(): readonly Seat[];
   /** True once the flag has dropped. Guests wait for this. */
   started(): boolean;
+  /**
+   * Which race is under way, as the server timestamped its start - or null
+   * while the room is waiting. It changes when the host runs it again, which
+   * is how a rider tells a rematch from the race they have just ridden.
+   */
+  startedAt(): number | null;
   /** Host only: drop the flag. Everyone watching sets off together. */
   start(): Promise<void>;
+  /**
+   * Host only: take the room out of the race and back to the lobby, on a new
+   * seed, so it can go again.
+   */
+  rematch(): Promise<void>;
   /** Called whenever the room changes, for the lobby screen. Null means it is gone. */
   onRoom(handle: (room: RoomState | null) => void): void;
   /** Host only: what the humans are holding, for World.step. */
@@ -137,6 +153,14 @@ export interface OnlineRace {
   sample(nowMs: number): StateMessage | null;
   /** Guest only: snapshots held for interpolation. Zero means nothing is arriving. */
   buffered(): number;
+  /**
+   * Guest only: forget everything buffered, because a new race is starting.
+   *
+   * Frames in flight when the flag drops are about the race before it, on a
+   * clock that is minutes ahead of the one beginning - drawn onto the new
+   * world they put the grid somewhere nobody is.
+   */
+  resetStream(): void;
   /**
    * Keepalive. Call every frame, racing or not: it is what measures the round
    * trip and what notices a link that has quietly stopped carrying anything.
@@ -222,6 +246,10 @@ export async function goOnline(
   let seq = 0;
   let lobbyClosed = false;
   let hasStarted = false;
+  let startedAt: number | null = null;
+  // The seed the room is on right now. A rematch writes a new one, and every
+  // rider picks it up here rather than from the handle they joined with.
+  let currentSeed = handle.seed;
   let onRoomHandler: ((room: RoomState | null) => void) | null = null;
 
   const linkTo = (peerUid: string, offerer: boolean): PeerLink => {
@@ -287,6 +315,8 @@ export async function goOnline(
       return;
     }
     hasStarted = state.started;
+    startedAt = state.startedAt;
+    if (typeof state.seed === 'number' && Number.isFinite(state.seed)) currentSeed = state.seed;
     const next = state.seats;
     seats = next;
     onRoomHandler?.(state);
@@ -317,7 +347,9 @@ export async function goOnline(
 
   return {
     lobbyId: handle.id,
-    seed: handle.seed,
+    get seed() {
+      return currentSeed;
+    },
     seat: handle.slot,
     isHost: handle.isHost,
 
@@ -328,9 +360,19 @@ export async function goOnline(
 
     started: () => hasStarted,
 
+    startedAt: () => startedAt,
+
     async start() {
       if (!handle.isHost) return;
       await startRace(db, handle).catch(() => {});
+    },
+
+    async rematch() {
+      if (!handle.isHost) return;
+      // Deliberately not reopened to matchmaking: a room that has raced once
+      // belongs to the people in it, and anybody they read the code to can
+      // still walk in now that the flag is down.
+      await resetRace(db, handle, randomSeed()).catch(() => {});
     },
 
     onRoom(h) {
@@ -349,7 +391,7 @@ export async function goOnline(
         t: 'state',
         seq: ++seq,
         time: source.time,
-        race: source.race,
+        phase: source.phase,
         countdown: source.countdown,
         racers: captureRacers(source.racers),
         cops: captureRacers(source.cops),
@@ -371,6 +413,8 @@ export async function goOnline(
     sample: (nowMs) => (handle.isHost ? null : buffer.sample(nowMs)),
 
     buffered: () => (handle.isHost ? 0 : buffer.size),
+
+    resetStream: () => buffer.clear(),
 
     tick(nowMs) {
       // Both ends ping, so both ends have their own measurement rather than

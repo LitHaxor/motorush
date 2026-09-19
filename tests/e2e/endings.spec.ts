@@ -158,3 +158,72 @@ test.describe('end screens', () => {
     await expect(page.locator('#screen-splash')).toBeVisible();
   });
 });
+
+test.describe('the board after you finish', () => {
+  test('keeps showing the riders still out there, then brings them home', async ({ page }) => {
+    await gotoGame(page);
+    await startRace(page, { seed: 4242 });
+
+    // Cross the line well clear of the field, which is the case that used to
+    // leave the rest of the grid frozen and marked DNF the instant you won.
+    await page.evaluate(() => {
+      const w = window.motorush!.world()!;
+      w.localRacer.s = w.raceDistance - 3;
+      for (const r of w.rivals) r.s = w.raceDistance - 400;
+    });
+    await page.evaluate(() => window.motorush!.fastForward(3, { throttle: 1 }));
+
+    await expect(page.locator('#screen-finish')).toBeVisible();
+    await expect(page.locator('#finish-stamp')).toHaveText('1ST');
+    // Nobody is a DNF while they are still riding: the board says how much
+    // road each of them has left instead.
+    await expect(page.locator('#finish-note')).toContainText(/STILL ON/i);
+    await expect(page.locator('#finish-results li').last()).not.toContainText('DNF');
+
+    // And the places behind you are settled by riding, not by the clock
+    // stopping: every rider gets home and the board says so.
+    await expect(page.locator('#finish-note')).toContainText(/EVERY RIDER IS IN/i, {
+      timeout: 40_000,
+    });
+    await expect(page.locator('#finish-results li')).toHaveCount(8);
+    await expect(page.locator('#finish-results li:has-text("DNF")')).toHaveCount(0);
+  });
+
+  test('puts the highlight on your own row', async ({ page }) => {
+    await gotoGame(page);
+    await startRace(page, { seed: 4243, riderName: 'HASAN' });
+    await page.evaluate(() => {
+      const w = window.motorush!.world()!;
+      w.localRacer.s = w.raceDistance - 3;
+    });
+    await page.evaluate(() => window.motorush!.fastForward(3, { throttle: 1 }));
+
+    await expect(page.locator('#screen-finish')).toBeVisible();
+    // Marked by who is actually holding the screen, not by racer zero.
+    await expect(page.locator('#finish-results li.is-player')).toHaveCount(1);
+    await expect(page.locator('#finish-results li.is-player')).toContainText('HASAN');
+  });
+});
+
+test.describe('the running order on the HUD', () => {
+  test('shows the whole grid with gaps up and down the road', async ({ page }) => {
+    await gotoGame(page);
+    await startRace(page, { seed: 4244, riderName: 'HASAN' });
+    await page.evaluate(() => {
+      const w = window.motorush!.world()!;
+      // One rider up the road, one behind, so both signs are on screen.
+      w.rivals[0].s = w.localRacer.s + 13;
+      w.rivals[1].s = w.localRacer.s - 30;
+    });
+    await page.evaluate(() => window.motorush!.fastForward(0.2, { throttle: 1 }));
+
+    const board = page.locator('#hud-board .board__row');
+    await expect(board).toHaveCount(8);
+    await expect(page.locator('#hud-board .board__row.is-you')).toHaveCount(1);
+    await expect(page.locator('#hud-board .board__row.is-you')).toContainText('HASAN');
+    // Somebody ahead, somebody behind, and a place on every row.
+    await expect(page.locator('#hud-board .board__gap:text-matches("\\\\+\\\\d")')).not.toHaveCount(0);
+    await expect(page.locator('#hud-board .board__gap:text-matches("-\\\\d")')).not.toHaveCount(0);
+    await expect(page.locator('#hud-board .board__pos').first()).toHaveText('#1');
+  });
+});

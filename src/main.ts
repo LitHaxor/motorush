@@ -15,7 +15,8 @@ import { type JoinMode, type OnlineRace, goOnline } from './net/online';
 import { GRID_SLOTS } from './net/lobby';
 import { RIVALS } from './sim/config';
 import { applyCars, applyPeds, applyRacers, reconcileLocalRacer } from './net/snapshot';
-import type { DifficultyKey, RacerInput, SimEvent } from './sim/types';
+import type { RacerSnapshot } from './net/protocol';
+import type { DifficultyKey, Racer, RacerInput, SimEvent } from './sim/types';
 
 /** Simulation runs at a fixed rate; rendering runs as fast as the display. */
 const FIXED_DT = 1 / 60;
@@ -194,6 +195,26 @@ class Game {
   private lastProgressAtMs = 0;
   /** Frames that threw, one after another. A few is a blip; a stream is a jam. */
   private frameFaults = 0;
+  /**
+   * Which race we are in, as the room stamped its start.
+   *
+   * A room can race more than once. Without this a rider sitting in the lobby
+   * after a race would be thrown straight back into the one they had just
+   * ridden, because the room still said it had started.
+   */
+  private racedAt: number | null = null;
+  /**
+   * Which race the world we are holding was built for.
+   *
+   * Set when the rebuild finishes, which is the moment the world stops being
+   * the one that was idling behind the menu and becomes the one everybody is
+   * racing in. The host must not put a single frame of the former on the wire:
+   * that world has been running since the page loaded, so its riders are
+   * kilometres up a road nobody has started yet - and a guest handed one of
+   * those frames was thrown past the finish line and handed a result before
+   * the lights had even gone out.
+   */
+  private worldRound: number | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.world = new World({ seed: Game.newSeed(), difficulty: 'normal' });
@@ -203,6 +224,7 @@ class Game {
       onOnline: (intent, opts) => void this.enterRoom(intent, opts),
       onLaunch: () => void this.launchRoom(),
       onLeaveRoom: () => void this.leaveRoom(),
+      onBackToLobby: () => this.backToLobby(),
       onResume: () => this.resume(),
       onRestart: () => void this.startRace(this.options),
       onQuit: () => this.quitToMenu(),
@@ -383,15 +405,19 @@ class Game {
         return;
       }
       if (room.started) {
-        // Already racing: somebody took a seat or gave one up mid-race, so the
-        // names on the bikes need to keep up.
-        if (this.mode === 'racing' || this.mode === 'paused') {
-          this.applySeatNames();
+        // The race we are already in - or have already ridden and stepped out
+        // of. Somebody taking a seat or giving one up only means the names on
+        // the bikes need to keep up.
+        if (room.startedAt === this.racedAt) {
+          if (this.mode !== 'lobby' && this.mode !== 'menu') this.applySeatNames();
           return;
         }
-        void this.beginOnlineRace();
+        void this.beginOnlineRace(room.startedAt);
         return;
       }
+      // Flag down: the room is a waiting room again, and the owner can drop it
+      // a second time. Anyone already back in the lobby wants to see who is
+      // still here for the next one.
       if (this.mode === 'lobby') this.drawRoom();
     });
     this.drawRoom();
@@ -410,10 +436,13 @@ class Game {
     if (!online) return;
 
     const taken = new Map(online.seats().map((s) => [s.slot, s.name]));
-    const humans = new Set(taken.values());
-    // Names no human is using, for the seats that are still bots.
-    const spare = RIVALS.names.filter((n) => !humans.has(n));
-    let nextSpare = 0;
+    // Every name already spoken for. It starts as the humans' and grows as the
+    // bots are walked, because a name that was merely free of humans could
+    // still be worn by another bot - which is how one grid ended up with two
+    // VIPERs on it, and a results board you had to count rows to find yourself
+    // on.
+    const inUse = new Set(taken.values());
+    const bots: Racer[] = [];
 
     for (const racer of this.world.racers) {
       const seated = taken.get(racer.id);
@@ -421,13 +450,19 @@ class Game {
         racer.name = seated;
         continue;
       }
-      // World names racer 0 after whoever is playing, but riders fill the
-      // grid from the back - so on every screen racer 0 was a bot wearing its
-      // own player's name, and the grid showed two of them.
-      if (humans.has(racer.name)) {
-        racer.name = spare[nextSpare % spare.length] ?? racer.name;
-        nextSpare++;
+      bots.push(racer);
+    }
+
+    for (const bot of bots) {
+      // World names racer 0 after whoever is playing, but riders fill the grid
+      // from the back - so on every screen racer 0 was a bot wearing its own
+      // player's name, and the grid showed two of them.
+      if (!inUse.has(bot.name)) {
+        inUse.add(bot.name);
+        continue;
       }
+      bot.name = RIVALS.names.find((n) => !inUse.has(n)) ?? `RIDER ${bot.id + 1}`;
+      inUse.add(bot.name);
     }
   }
 
@@ -449,23 +484,59 @@ class Game {
     });
   }
 
-  /** Owner pressed start. Everyone else finds out by watching the room. */
+  /**
+   * Owner pressed start. Everyone else finds out by watching the room.
+   *
+   * A room that has already raced is put back to the lobby first, on a fresh
+   * seed - so the rematch is a new road rather than the same seven kilometres
+   * again, and so every rider sees the flag drop as a new race rather than as
+   * the one they have just ridden.
+   */
   private async launchRoom(): Promise<void> {
-    if (!this.online?.isHost) return;
-    await this.online.start();
+    const online = this.online;
+    if (!online?.isHost) return;
+    if (online.startedAt() !== null) await online.rematch();
+    await online.start();
+  }
+
+  /**
+   * Step out of the race, but not out of the room.
+   *
+   * The way back to the grid when your own race is run: the seat stays yours,
+   * the names stay on the board, and the owner can start another one. On the
+   * host the world carries on turning behind this screen, because the riders
+   * still out on the road are riding in it - see `servesOthers`.
+   */
+  private backToLobby(): void {
+    if (!this.online) {
+      this.quitToMenu();
+      return;
+    }
+    this.mode = 'lobby';
+    this.linkTrouble = null;
+    this.localControl = false;
+    this.hud.setVisible(false);
+    this.hud.clearTransient();
+    this.hud.setLink(null);
+    this.drawRoom();
   }
 
   private async leaveRoom(note = ''): Promise<void> {
     await this.online?.close().catch(() => {});
     this.online = null;
+    this.racedAt = null;
+    this.worldRound = null;
     this.mode = 'menu';
     this.screens.show('splash');
     this.screens.setOnlineNote(note);
   }
 
   /** The flag dropped. Build the world on the room's seed and go. */
-  private async beginOnlineRace(): Promise<void> {
-    if (this.mode === 'racing' || !this.online) return;
+  private async beginOnlineRace(startedAt: number | null): Promise<void> {
+    if (!this.online) return;
+    // Taken before the await: two room updates can land while the world is
+    // being built, and the second must not start the same race again.
+    this.racedAt = startedAt;
     await this.startRace({ ...this.options, seed: this.online.seed }, true);
   }
 
@@ -507,9 +578,18 @@ class Game {
     // frame following somebody else's rider.
     const seat = this.online?.seat ?? 0;
     this.world.localRacer = this.world.racers[seat] ?? this.world.player;
+    // A guest does not get to decide how its own race ends - the host does,
+    // and tells us on the next frame. Offline and on the host, we decide.
+    this.world.authority = !(this.online !== null && !this.online.isHost);
     this.applySeatNames();
 
     this.view?.rebuild(this.world);
+
+    this.worldRound = this.online ? this.racedAt : null;
+    // Whatever was on its way for the last race is about this world's
+    // predecessor and would be drawn onto this one: a grid from a road nobody
+    // is on any more, on a clock that reads minutes ahead of this race's.
+    this.online?.resetStream();
 
     this.accumulator = 0;
     this.lastFrame = performance.now();
@@ -594,6 +674,10 @@ class Game {
   pause(): void {
     if (this.mode !== 'racing') return;
     this.mode = 'paused';
+    // Nobody can pause a race that other people are riding in, so in a room
+    // the menu offers the room's way out rather than a restart that would
+    // only ever restart your own.
+    this.screens.setPauseRoom(this.online !== null);
     this.screens.show('pause');
   }
 
@@ -608,6 +692,8 @@ class Game {
   quitToMenu(): void {
     void this.online?.close().catch(() => {});
     this.online = null;
+    this.racedAt = null;
+    this.worldRound = null;
     this.linkTrouble = null;
     this.localControl = false;
     this.hud.setLink(null);
@@ -643,9 +729,15 @@ class Game {
     try {
       if (this.mode === 'racing') {
         this.stepSimulation(dt, input, now);
+      } else if (this.servesOthers()) {
+        // Our race is run; theirs is not. The world has to keep turning and,
+        // on the host, keep going out on the wire - a host that stopped
+        // simulating the moment it crossed the line took every other rider's
+        // road away with it, and they simply stopped dead where they were.
+        this.stepSimulation(dt, NEUTRAL, now);
       } else if (this.mode === 'menu' || this.mode === 'over') {
         // Keep the scene alive behind the menus and end screens.
-        this.world.step(dt, { throttle: 0, brake: 0, steer: 0, attackLeft: false, attackRight: false });
+        this.world.step(dt, NEUTRAL);
       }
 
       if (this.mode !== 'paused') {
@@ -653,6 +745,8 @@ class Game {
       }
       if (this.mode === 'racing') {
         this.hud.update(this.world, dt);
+      } else if (this.mode === 'over') {
+        this.refreshResults();
       }
       this.frameFaults = 0;
     } catch (err) {
@@ -673,6 +767,34 @@ class Game {
       cop ? Math.abs(me.s - cop.s) : null,
     );
   };
+
+  /**
+   * Is this browser still on the hook for a race it is no longer riding in?
+   *
+   * The host is the race: its simulation is the one every guest draws, so it
+   * keeps running until the last rider is home however its own race ended and
+   * whatever screen it is looking at. A guest is on the hook for nothing, but
+   * while it is watching the board fill in it keeps taking frames so the
+   * places and times on that board are the real ones.
+   */
+  private servesOthers(): boolean {
+    const online = this.online;
+    if (!online || !online.started()) return false;
+    // Not until the world in hand belongs to the race that is under way.
+    if (this.worldRound === null || this.worldRound !== online.startedAt()) return false;
+    if (this.world.raceComplete) return false;
+    return online.isHost || this.mode === 'over';
+  }
+
+  /** Keep the results board in step with a race that is still being run. */
+  private refreshResults(): void {
+    if (this.screens.active !== 'finish') return;
+    this.screens.showResults({
+      standings: this.world.standingEntries(),
+      raceDistance: this.world.raceDistance,
+      complete: this.world.raceComplete,
+    });
+  }
 
   private stepSimulation(dt: number, input: RacerInput, nowMs: number): void {
     if (this.online && !this.online.isHost) {
@@ -707,9 +829,11 @@ class Game {
       cops: this.world.cop ? [this.world.cop] : [],
       cars: this.world.traffic.cars,
       peds: this.world.pedestrians,
-      aroundS: this.world.player.s,
+      aroundS: this.world.localRacer.s,
       time: this.world.elapsed,
-      race: this.world.state,
+      // How the RACE is going, not how the host's race is going. Sending the
+      // host's own verdict put the host's BUSTED screen up on every guest.
+      phase: this.world.phase,
       countdown: this.world.countdown,
     }, nowMs);
 
@@ -752,12 +876,18 @@ class Game {
     // a couple is only a queue growing behind a link that is not carrying
     // anything - and when it came back it would fire off a stored flurry.
     if (this.pendingSwings.length > 2) this.pendingSwings.splice(0, this.pendingSwings.length - 2);
-    const sent = online.sendInput({
-      ...input,
-      attackLeft: this.pendingSwings.includes(-1),
-      attackRight: this.pendingSwings.includes(1),
-    }, nowMs);
-    if (sent) this.pendingSwings.length = 0;
+    // Only while we are actually riding. Once our race is run we are watching
+    // the board, and a stream of neutral frames would keep the host believing
+    // somebody is holding this bike - when what should happen is the AI taking
+    // it back the moment we stop asking for it.
+    if (this.mode === 'racing') {
+      const sent = online.sendInput({
+        ...input,
+        attackLeft: this.pendingSwings.includes(-1),
+        attackRight: this.pendingSwings.includes(1),
+      }, nowMs);
+      if (sent) this.pendingSwings.length = 0;
+    }
 
     // How long since the host last said anything. Infinity before the first
     // frame, which is the case that matters most: a link that never opened.
@@ -815,12 +945,15 @@ class Game {
     // the race end at all - its local rider is never simulated, so it would
     // sit on the start line for ever.
     this.world.countdown = frame.countdown;
-    if (frame.race !== this.world.state) {
-      this.world.state = frame.race;
-      if (frame.race === 'finished' || frame.race === 'busted' || frame.race === 'wasted') {
-        this.showRemoteResult(frame.race);
-      }
-    }
+    if (frame.phase === 'racing' && this.world.state === 'countdown') this.world.state = 'racing';
+
+    // How OUR race ended is written on our own bike. The host's verdict is the
+    // host's: it crosses the line, gets arrested or gets flattened on its own
+    // account, and none of that is an ending for anybody else. Reading the
+    // race state as our own is what used to put the host's BUSTED screen up on
+    // every guest - and what left a guest who came home first riding on with
+    // no result at all, because the host was still out on the road.
+    if (mine) this.readVerdict(mine);
     this.judgeLink(silentMs, nowMs);
   }
 
@@ -888,7 +1021,7 @@ class Game {
    *
    * The world is already running locally by this point - that is what the
    * recovery does - so this only drops the link and takes the screen down.
-   * Deliberately NOT a restart: a rider eight kilometres into a race does not
+   * Deliberately NOT a restart: a rider five kilometres into a race does not
    * want to be sent back to the start line because somebody else's wifi died.
    */
   private continueOffline(): void {
@@ -904,6 +1037,9 @@ class Game {
     this.wentSolo = true;
     this.linkTrouble = null;
     this.localControl = false;
+    // Nobody left to defer to: from here this browser decides how its own race
+    // ends, or it could never end at all.
+    this.world.authority = true;
     void this.online?.close().catch(() => {});
     this.online = null;
     this.hud.setLink(null);
@@ -923,31 +1059,24 @@ class Game {
     this.quitToMenu();
   }
 
-  /** A guest's race ends when the host says it does. */
-  private showRemoteResult(reason: 'finished' | 'busted' | 'wasted'): void {
-    if (this.mode === 'over') return;
-    this.mode = 'over';
-    this.hud.setVisible(false);
-    const player = this.world.player;
-    // Built the same way World.endRace builds it, from the state the host has
-    // already put on our grid - the guest never runs endRace itself.
-    this.screens.showResult({
-      reason,
-      place: player.place,
-      time: player.finishTime ?? this.world.elapsed,
-      distance: player.s,
-      raceDistance: this.world.raceDistance,
-      topSpeed: player.bestSpeed,
-      takedowns: player.hitsLanded,
-      crashes: player.knockdowns,
-      standings: this.world.standings.map((r) => ({
-        name: r.name,
-        place: r.place,
-        time: r.finishTime,
-        isPlayer: r.kind === 'player',
-        s: r.s,
-      })),
-    });
+  /**
+   * The host's word on how our own race ended.
+   *
+   * Only ever about our own bike. It goes through the same `concludeLocal` and
+   * the same result screen an offline race uses, so a guest's finish board is
+   * built from the same numbers - including the time, which is the host's
+   * clock and therefore the one everybody in the room agrees on.
+   */
+  private readVerdict(mine: RacerSnapshot): void {
+    if (this.mode !== 'racing' || this.world.isOver) return;
+    // Belt and braces: a frame that arrives before the flag is not a frame
+    // about this race, and no result read off one can be right.
+    if (this.world.state === 'countdown') return;
+    if (mine.state === 'finished') {
+      this.dispatch(this.world.concludeLocal('finished', mine.finishTime));
+    } else if (mine.state === 'busted') {
+      this.dispatch(this.world.concludeLocal('busted'));
+    }
   }
 
   /** Turn queued attack presses into swings, resolving "auto" to a side. */
@@ -987,7 +1116,10 @@ class Game {
       if (e.type === 'raceEnd') {
         this.mode = 'over';
         this.hud.setVisible(false);
-        this.screens.showResult(e.result);
+        // In a room the way out is about the room: wait for the next race, or
+        // give the seat up. Racing again on your own is not a thing you can do
+        // without walking out on the people you are racing.
+        this.screens.showResult(e.result, { inRoom: this.online !== null });
       }
     }
   }

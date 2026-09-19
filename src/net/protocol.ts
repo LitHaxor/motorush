@@ -12,7 +12,7 @@
 // so every field is checked and a malformed frame is dropped rather than
 // thrown - a peer feeding us rubbish should cost a frame, not the race.
 
-import type { RacerInput, RacerState, RaceState, RiderPhase } from '../sim/types';
+import type { RacePhase, RacerInput, RacerState, RiderPhase } from '../sim/types';
 
 /** Snapshots per second from the host. */
 export const SNAPSHOT_HZ = 20;
@@ -21,7 +21,7 @@ export const INPUT_HZ = 30;
 
 const RACER_STATES: RacerState[] = ['ride', 'down', 'finished', 'busted'];
 const RIDER_PHASES: RiderPhase[] = ['tumble', 'standing', 'running', 'lifting', 'mounting'];
-const RACE_STATES: RaceState[] = ['countdown', 'racing', 'finished', 'busted', 'wasted'];
+const RACE_PHASES: RacePhase[] = ['countdown', 'racing', 'complete'];
 
 /**
  * One civilian car.
@@ -81,6 +81,15 @@ export interface RacerSnapshot {
    */
   attackTimer: number;
   place: number;
+  /**
+   * When they crossed the line, on the host's race clock. Null until they do.
+   *
+   * Without it a guest had no idea anybody had finished, including itself: the
+   * board could put a rider first but not say what they had done it in, and a
+   * guest that came home ahead of the host sat on a moving road with no result
+   * at all, because the only ending it was ever told about was the host's.
+   */
+  finishTime: number | null;
 }
 
 export interface StateMessage {
@@ -89,7 +98,11 @@ export interface StateMessage {
   seq: number;
   /** Host's race clock in seconds, which is what guests interpolate against. */
   time: number;
-  race: RaceState;
+  /**
+   * How the race as a whole is going - never how the host's own race is going.
+   * Each rider reads their own ending off their own bike in `racers`.
+   */
+  phase: RacePhase;
   countdown: number;
   racers: RacerSnapshot[];
   /**
@@ -191,6 +204,9 @@ export function decode(raw: string): NetMessage | null {
           attackDir: dir(r.attackDir),
           attackTimer: Math.max(0, num(r.attackTimer)),
           place: num(r.place, 1),
+          finishTime: typeof r.finishTime === 'number' && Number.isFinite(r.finishTime)
+            ? r.finishTime
+            : null,
         }))
         // A racer with no id cannot be matched to anything on the grid.
         .filter((r) => r.id >= 0);
@@ -198,7 +214,7 @@ export function decode(raw: string): NetMessage | null {
       t: 'state',
       seq: num(m.seq),
       time: num(m.time),
-      race: oneOf(m.race, RACE_STATES, 'racing'),
+      phase: oneOf(m.phase, RACE_PHASES, 'racing'),
       countdown: num(m.countdown),
       racers: racerList(m.racers),
       cops: racerList(m.cops),

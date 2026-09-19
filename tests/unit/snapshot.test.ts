@@ -13,11 +13,12 @@ const car = (id: number, over: Partial<CarSnapshot> = {}): CarSnapshot => ({
 
 const racer = (id: number, over: Partial<RacerSnapshot> = {}): RacerSnapshot => ({
   id, s: 0, lateral: 0, speed: 0, lean: 0, health: 100, hop: 0,
-  state: 'ride', riderPhase: 'standing', attackDir: 0, attackTimer: 0, place: 1, ...over,
+  state: 'ride', riderPhase: 'standing', attackDir: 0, attackTimer: 0, place: 1,
+  finishTime: null, ...over,
 });
 
 const frame = (seq: number, time: number, racers: RacerSnapshot[], cars: CarSnapshot[] = []): StateMessage =>
-  ({ t: 'state', seq, time, race: 'racing', countdown: 0, racers, cars, peds: [], cops: [] });
+  ({ t: 'state', seq, time, phase: 'racing', countdown: 0, racers, cars, peds: [], cops: [] });
 
 describe('capturing the grid', () => {
   it('photographs every rider', () => {
@@ -387,5 +388,69 @@ describe('seeing the punches', () => {
     w.player.attackTimer = 0.35;
     reconcileLocalRacer(w.player, racer(w.player.id, { attackTimer: 0, state: 'ride' }), 1 / 60);
     expect(w.player.attackTimer).toBe(0.35);
+  });
+});
+
+describe('finishing times travel with the grid', () => {
+  it('photographs them off the host', () => {
+    const w = new World({ seed: 4 });
+    w.racers[1].finishTime = 77.777;
+    const shot = captureRacers(w.racers);
+    expect(shot[0].finishTime).toBeNull();
+    // Rounded like everything else: nobody reads the fourth decimal.
+    expect(shot[1].finishTime).toBeCloseTo(77.78, 2);
+  });
+
+  it('writes them onto a guest, so the board can show a time at all', () => {
+    const w = new World({ seed: 4 });
+    applyRacers(w.racers, [racer(1, { state: 'finished', finishTime: 104.5 })]);
+    expect(w.racers[1].finishTime).toBe(104.5);
+    expect(w.racers[1].state).toBe('finished');
+  });
+
+  it('gives our own rider the host’s time rather than our guess at it', () => {
+    const w = new World({ seed: 4 });
+    const me = w.localRacer;
+    me.finishTime = 99;
+    reconcileLocalRacer(me, racer(me.id, { state: 'finished', finishTime: 101.25 }), 1 / 60);
+    expect(me.finishTime).toBe(101.25);
+  });
+
+  it('does not invent one while interpolating', () => {
+    const blended = lerpRacers(
+      [racer(1, { finishTime: null })],
+      [racer(1, { finishTime: 50 })],
+      0.5,
+    );
+    // A time appears when the rider crosses the line, not half way there.
+    expect(blended[0].finishTime).toBeNull();
+  });
+});
+
+describe('a buffer between two races', () => {
+  it('forgets frames about the race that just ended', () => {
+    const buffer = new SnapshotBuffer(0.1);
+    buffer.push(frame(1, 106, [racer(0)]), 1000);
+    expect(buffer.size).toBe(1);
+
+    buffer.clear();
+
+    // Nothing held, and nothing to draw until the new race starts talking.
+    expect(buffer.size).toBe(0);
+    expect(buffer.sample(1000)).toBeNull();
+    expect(buffer.ageMs(1000)).toBe(Infinity);
+  });
+
+  it('still refuses a frame it has already seen', () => {
+    // The sequence belongs to the link, not to the race: forgetting it would
+    // let a frame that really is stale walk back in as if it were new.
+    const buffer = new SnapshotBuffer(0.1);
+    buffer.push(frame(7, 106, [racer(0, { s: 4628 })]), 1000);
+    buffer.clear();
+    buffer.push(frame(7, 106, [racer(0, { s: 4628 })]), 1010);
+    expect(buffer.size).toBe(0);
+
+    buffer.push(frame(8, 0.1, [racer(0, { s: 3 })]), 1020);
+    expect(buffer.sample(1020)!.racers[0].s).toBe(3);
   });
 });

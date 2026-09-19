@@ -3,8 +3,9 @@
 
 import type { World } from '../sim/world';
 import type { SimEvent } from '../sim/types';
-import { formatTime, ordinal, mps2kmh, clamp } from '../sim/mathx';
+import { formatTime, formatGap, formatShortTime, ordinal, mps2kmh, clamp } from '../sim/mathx';
 import { POLICE } from '../sim/config';
+import { standingRows, type StandingRow } from './standings';
 import type { InputManager, AttackSide } from '../input/input';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
@@ -12,6 +13,55 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
   if (!el) throw new Error(`missing element #${id}`);
   return el as T;
 };
+
+/** The elements of one row on the standings board, held so they can be reused. */
+interface BoardRow {
+  root: HTMLLIElement;
+  dot: HTMLSpanElement;
+  name: HTMLSpanElement;
+  pos: HTMLSpanElement;
+  gap: HTMLSpanElement;
+  /** What we last painted the dot, kept because the DOM gives it back in a
+   *  different notation and would look changed on every single frame. */
+  colour: string;
+}
+
+function makeRow(): BoardRow {
+  const root = document.createElement('li');
+  root.className = 'board__row';
+  const dot = document.createElement('span');
+  dot.className = 'board__dot';
+  const name = document.createElement('span');
+  name.className = 'board__name';
+  const pos = document.createElement('span');
+  pos.className = 'board__pos';
+  const gap = document.createElement('span');
+  gap.className = 'board__gap';
+  root.append(dot, name, pos, gap);
+  return { root, dot, name, pos, gap, colour: '' };
+}
+
+/** Only writes what changed - this runs every frame, for every rider. */
+function writeRow(el: BoardRow, row: StandingRow): void {
+  const colour = `#${row.color.toString(16).padStart(6, '0')}`;
+  if (el.colour !== colour) {
+    el.colour = colour;
+    el.dot.style.background = colour;
+  }
+  if (el.name.textContent !== row.name) el.name.textContent = row.name;
+  const pos = `#${row.place}`;
+  if (el.pos.textContent !== pos) el.pos.textContent = pos;
+  // Home riders show what they did it in; the rest show how far away they are.
+  // Your own row shows neither: you are the thing everything else is measured
+  // against, and a place is all your row has left to say.
+  const gap = row.finishTime != null
+    ? formatShortTime(row.finishTime)
+    : row.gap == null ? '' : formatGap(row.gap);
+  if (el.gap.textContent !== gap) el.gap.textContent = gap;
+  el.root.classList.toggle('is-you', row.isYou);
+  el.root.classList.toggle('is-down', row.isDown && row.finishTime == null);
+  el.root.classList.toggle('is-home', row.finishTime != null);
+}
 
 type ToastKind = 'good' | 'hot' | 'bad' | 'cool';
 
@@ -41,8 +91,11 @@ export class Hud {
   private readonly net = $('hud-net');
   private readonly netDot = $('hud-net-dot');
   private readonly netText = $('hud-net-text');
+  private readonly board = $('hud-board');
 
   private flashTimer = 0;
+  /** One row per rider, kept and rewritten rather than rebuilt every frame. */
+  private boardRows = new Map<number, BoardRow>();
 
   setVisible(visible: boolean): void {
     this.root.hidden = !visible;
@@ -172,6 +225,8 @@ export class Hud {
 
     this.speed.textContent = String(Math.round(mps2kmh(p.speed)));
 
+    this.updateBoard(world);
+
     // --- police ---
     if (world.cop) {
       this.pursuit.hidden = false;
@@ -196,6 +251,37 @@ export class Hud {
       this.flashTimer -= dt;
       if (this.flashTimer <= 0) this.flash.classList.remove('is-hit');
     }
+  }
+
+  /**
+   * The running order, all eight of them, with who is how far up the road.
+   *
+   * Rewritten in place: eight rows rebuilt sixty times a second is a lot of
+   * garbage to make for a list that mostly says the same thing, and replacing
+   * the elements would restart every transition on it.
+   */
+  private updateBoard(world: World): void {
+    const rows = standingRows(world.racers, world.localRacer);
+    this.syncRows(rows);
+    for (const row of rows) {
+      const el = this.boardRows.get(row.id);
+      if (el) writeRow(el, row);
+    }
+  }
+
+  /** Build the rows once per race, or again if the grid itself changed. */
+  private syncRows(rows: readonly StandingRow[]): void {
+    const same =
+      this.boardRows.size === rows.length && rows.every((r) => this.boardRows.has(r.id));
+    if (same) {
+      // Order can change on any lap; the rows themselves do not have to.
+      const order = rows.map((r) => this.boardRows.get(r.id)!.root);
+      const current = [...this.board.children];
+      if (order.some((el, i) => current[i] !== el)) this.board.replaceChildren(...order);
+      return;
+    }
+    this.boardRows = new Map(rows.map((r) => [r.id, makeRow()]));
+    this.board.replaceChildren(...rows.map((r) => this.boardRows.get(r.id)!.root));
   }
 
   // ----------------------------------------------------------------- effects

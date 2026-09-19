@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { clamp, lerp, damp, approach, makeRng, formatTime, ordinal, mps2kmh, formatKm } from '../../src/sim/mathx';
+import {
+  clamp, lerp, damp, approach, makeRng, formatTime, formatShortTime, formatGap,
+  ordinal, mps2kmh, formatKm,
+} from '../../src/sim/mathx';
 
 describe('mathx', () => {
   it('clamps to the given range', () => {
@@ -88,5 +91,44 @@ describe('formatKm', () => {
     expect(formatKm(-40)).toBe('0.00 km');
     expect(formatKm(Number.NaN)).toBe('0.00 km');
     expect(formatKm(Number.POSITIVE_INFINITY)).toBe('0.00 km');
+  });
+});
+
+describe('formatGap', () => {
+  it('signs the gap from the reader’s point of view', () => {
+    // Up the road is a plus, back down it is a minus - the board is read as
+    // "where is everyone in relation to me", not as raw positions.
+    expect(formatGap(13)).toBe('+13 m');
+    expect(formatGap(-30)).toBe('-30 m');
+    expect(formatGap(0)).toBe('+0 m');
+  });
+
+  it('rounds to whole metres', () => {
+    expect(formatGap(12.4)).toBe('+12 m');
+    expect(formatGap(-12.6)).toBe('-13 m');
+  });
+
+  it('switches to kilometres once metres stop meaning anything', () => {
+    expect(formatGap(1000)).toBe('+1.0 km');
+    expect(formatGap(-2340)).toBe('-2.3 km');
+    expect(formatGap(999)).toBe('+999 m');
+  });
+
+  it('says nothing rather than something wrong', () => {
+    expect(formatGap(Number.NaN)).toBe('');
+    expect(formatGap(Number.POSITIVE_INFINITY)).toBe('');
+  });
+});
+
+describe('formatShortTime', () => {
+  it('fits a finishing time into a HUD row', () => {
+    expect(formatShortTime(92.46)).toBe('1:32.4');
+    expect(formatShortTime(5)).toBe('0:05.0');
+    expect(formatShortTime(610.05)).toBe('10:10.0');
+  });
+
+  it('never prints nonsense', () => {
+    expect(formatShortTime(-3)).toBe('0:00.0');
+    expect(formatShortTime(Number.NaN)).toBe('0:00.0');
   });
 });

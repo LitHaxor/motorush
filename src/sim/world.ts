@@ -22,15 +22,32 @@ import type {
   DifficultyKey,
   EndReason,
   Pickup,
+  RacePhase,
   RaceResult,
   RaceState,
   Racer,
   RacerInput,
   Rng,
   SimEvent,
+  StandingEntry,
 } from './types';
 
 export const COUNTDOWN_TIME = 3.6;
+
+/**
+ * The slowest a rider can be getting home at and still be considered to be
+ * getting home, in m/s.
+ *
+ * It sets the backstop on how long the grid keeps being simulated after your
+ * own race has ended. The field normally gets in long before it - whoever is
+ * last is rarely more than half a minute back when the winner crosses, and
+ * the simulation stops the moment they do - but the number has to be derived
+ * from the race rather than picked, because it is the thing standing between a
+ * rider still out on the road and the world being switched off underneath
+ * them. At walking-pace-plus it allows a rider who crashes repeatedly the
+ * whole length of the course, which is the worst case that is still racing.
+ */
+const POST_RACE_MIN_SPEED = 20;
 
 /** Starting grid layout: four columns, rows 4.6 m apart, odd columns set back. */
 const GRID_COLUMNS = 4;
@@ -94,6 +111,16 @@ export class World implements AiWorldView {
   readonly racers: Racer[];
 
   state: RaceState = 'countdown';
+  /**
+   * Whether this browser decides how the local rider's race ends.
+   *
+   * True offline and on the host. False on a guest, where crossing the line,
+   * being beaten unconscious and being arrested are all the host's verdicts to
+   * reach. A guest that decided for itself decided on a health bar a frame out
+   * of date - which is how a guest who was merely knocked down ended up with
+   * its own race quietly marked over, and the road stopping under it.
+   */
+  authority = true;
   countdown = COUNTDOWN_TIME;
   elapsed = 0;
   heat = 0;
@@ -107,6 +134,20 @@ export class World implements AiWorldView {
   standings: Racer[] = [];
 
   private lastLight = 4;
+  /**
+   * Whether the rest of the grid keeps racing once your own race has ended.
+   *
+   * Set when you finish - the standings behind the results screen are a live
+   * race, not a freeze frame, and the riders you beat are still out there
+   * earning their places - and set whenever anybody else is riding one of
+   * these bikes from another browser, because their race is not over just
+   * because yours is.
+   */
+  private followField = false;
+  /** Seconds simulated since your own race ended, against POST_RACE_GRACE. */
+  private postRaceTime = 0;
+  /** Set once an input has arrived from another browser for any seat. */
+  private sawRemotes = false;
   /**
    * Racer ids holding the throttle at the right moment.
    *
@@ -266,6 +307,75 @@ export class World implements AiWorldView {
     return this.state === 'finished' || this.state === 'busted' || this.state === 'wasted';
   }
 
+  /** Has this rider's race been decided, one way or another? */
+  private isDone(r: Racer): boolean {
+    if (r.finishTime != null || r.state === 'busted') return true;
+    // Yours ends when it ends, however it ended: a rider who was wasted never
+    // crosses the line, and waiting for them to would hold the whole grid open
+    // until the backstop ran out.
+    return this.isOver && r === this.localRacer;
+  }
+
+  /**
+   * How long the grid keeps racing after your own race ends before we accept
+   * that whoever is left is not coming home.
+   */
+  get postRaceGrace(): number {
+    return this.raceDistance / POST_RACE_MIN_SPEED;
+  }
+
+  /** Is anybody still out on the road with something left to settle? */
+  get fieldStillRacing(): boolean {
+    if (this.postRaceTime > this.postRaceGrace) return false;
+    return this.racers.some((r) => !this.isDone(r));
+  }
+
+  /**
+   * Nothing left to simulate: your race is over and so is everybody else's.
+   *
+   * What the host stops broadcasting on, and what tells a rider watching the
+   * board that the times on it are final rather than still moving.
+   */
+  get raceComplete(): boolean {
+    return this.isOver && !this.fieldStillRacing;
+  }
+
+  /**
+   * Is there a race going on for anyone at all?
+   *
+   * Not the same as "am I still in it". Online, the host's own race ending is
+   * the most ordinary thing in the world - somebody has to finish first - and
+   * the seven riders still out there must keep being able to throw a punch.
+   */
+  get inPlay(): boolean {
+    return this.state === 'racing' || (this.isOver && this.fieldStillRacing);
+  }
+
+  /** Where the race as a whole has got to, for the riders watching it. */
+  get phase(): RacePhase {
+    if (this.state === 'countdown') return 'countdown';
+    return this.raceComplete ? 'complete' : 'racing';
+  }
+
+  /**
+   * The running order, as the results board prints it.
+   *
+   * `isPlayer` is the rider holding this screen, not racer 0 - online those
+   * are different people, and marking racer 0 put the highlight on the host's
+   * bike on every guest's board.
+   */
+  standingEntries(): StandingEntry[] {
+    return [...this.standings]
+      .sort((a, b) => a.place - b.place || b.s - a.s)
+      .map((r) => ({
+        name: r.name,
+        place: r.place,
+        time: r.finishTime,
+        isPlayer: r === this.localRacer,
+        s: r.s,
+      }));
+  }
+
   updateStandings(): Racer[] {
     const order = [...this.racers].sort((a, b) => {
       const aDone = a.finishTime != null;
@@ -382,6 +492,11 @@ export class World implements AiWorldView {
   private endRace(reason: EndReason, events: SimEvent[]): void {
     if (this.isOver) return;
     this.state = reason;
+    this.postRaceTime = 0;
+    // Finishing is the one ending that leaves something worth watching: the
+    // riders you beat are still coming. Being arrested or beaten unconscious
+    // is not, unless somebody else is riding one of these bikes for real.
+    this.followField = reason === 'finished' || this.sawRemotes;
     this.updateStandings();
     this.result = {
       reason,
@@ -392,15 +507,30 @@ export class World implements AiWorldView {
       topSpeed: this.localRacer.bestSpeed,
       takedowns: this.localRacer.hitsLanded,
       crashes: this.localRacer.knockdowns,
-      standings: this.standings.map((r) => ({
-        name: r.name,
-        place: r.place,
-        time: r.finishTime,
-        isPlayer: r.kind === 'player',
-        s: r.s,
-      })),
+      standings: this.standingEntries(),
     };
     events.push({ type: 'raceEnd', reason, result: this.result });
+  }
+
+  /**
+   * Apply a verdict reached somewhere else - the host's - to our own race.
+   *
+   * A guest does not decide its own ending, so this is how one arrives: the
+   * host's snapshot says our rider crossed the line or was taken off it, and
+   * the same result panel goes up as it would have offline. Returns the events
+   * it raised so the caller can hand them to the HUD in the usual way.
+   */
+  concludeLocal(reason: EndReason, finishTime: number | null = null): SimEvent[] {
+    const events: SimEvent[] = [];
+    if (this.isOver) return events;
+    if (reason === 'finished') {
+      this.localRacer.state = 'finished';
+      this.localRacer.finishTime = finishTime ?? this.localRacer.finishTime ?? this.elapsed;
+    } else if (reason === 'busted') {
+      this.localRacer.state = 'busted';
+    }
+    this.endRace(reason, events);
+    return events;
   }
 
   /** Queue a player attack. Returns true if the swing started. */
@@ -419,7 +549,10 @@ export class World implements AiWorldView {
    * handed each press once and turns it into exactly one swing here.
    */
   requestAttackFor(racerId: number, dir: number): boolean {
-    if (this.state !== 'racing') return false;
+    // Deliberately not `state === 'racing'`: that is the HOST's own race, and
+    // when the host crossed the line first every other rider's punches stopped
+    // landing for the rest of the race.
+    if (!this.inPlay) return false;
     const racer = this.field.find((r) => r.id === racerId);
     if (!racer || !canAttack(racer)) return false;
     return startAttack(racer, dir);
@@ -440,11 +573,25 @@ export class World implements AiWorldView {
     remoteInputs?: ReadonlyMap<number, Readonly<RacerInput>>,
   ): SimEvent[] {
     const events: SimEvent[] = [];
+    if (remoteInputs?.size) this.sawRemotes = true;
+
     if (this.isOver) {
-      // Keep the world alive behind the results screen.
-      this.stepVisualsOnly(dt);
-      return events;
+      this.postRaceTime += dt;
+      // Your race is over; theirs is not. The grid keeps being simulated in
+      // full so the standings behind the results screen keep moving and, on a
+      // host, so the riders still out on the road keep being sent a world to
+      // ride in. Once everybody is home there is nothing left to work out and
+      // the scene simply ticks over.
+      if (!this.followField || !this.fieldStillRacing) {
+        this.stepVisualsOnly(dt);
+        return events;
+      }
     }
+
+    // Once your race is decided your hands come off the bars: it rolls out,
+    // gets picked up, or sits where the patrol left it. The controls belong to
+    // the results screen now.
+    const localInput = this.isOver ? NEUTRAL_INPUT : playerInput;
 
     if (this.state === 'countdown') {
       this.countdown -= dt;
@@ -456,7 +603,7 @@ export class World implements AiWorldView {
       // Hold the throttle as the lights go out for a launch boost. Every
       // human on the grid gets the same chance, local or not.
       for (const r of this.field) {
-        const input = r === this.localRacer ? playerInput : remoteInputs?.get(r.id);
+        const input = r === this.localRacer ? localInput : remoteInputs?.get(r.id);
         if (!input) continue; // AI riders do not get a holeshot
         const onGas = (input.throttle ?? 0) > 0.5;
         if (this.countdown < 0.55 && onGas) this.holeshotArmed.add(r.id);
@@ -482,7 +629,7 @@ export class World implements AiWorldView {
     // --- inputs ------------------------------------------------------------
     const field = this.field;
     const inputs = new Map<Racer, Readonly<RacerInput>>();
-    inputs.set(this.localRacer, isRiding(this.localRacer) ? playerInput : NEUTRAL_INPUT);
+    inputs.set(this.localRacer, isRiding(this.localRacer) ? localInput : NEUTRAL_INPUT);
     for (const r of field) {
       if (r === this.localRacer) continue;
       // A patrol with you on the ground stops racing and pulls over.
@@ -526,10 +673,14 @@ export class World implements AiWorldView {
       if (e.type === 'pedestrianHit' && e.racer === this.localRacer) this.addHeat(POLICE.hitHeat * 1.6);
     }
 
-    this.stepPolice(dt, events);
+    // A patrol is only ever interested in you, so once your race is settled
+    // there is nothing for them to decide. They are left on the road rather
+    // than deleted: a police bike blinking out of the shot behind the results
+    // screen looks like a bug, and standing there looks like the arrest it was.
+    if (!this.isOver) this.stepPolice(dt, events);
 
     // --- outcomes -------------------------------------------------------------
-    if (this.localRacer.health <= 0 && this.localRacer.state !== 'busted') {
+    if (this.authority && !this.isOver && this.localRacer.health <= 0 && this.localRacer.state !== 'busted') {
       knockDown(this.localRacer, 1, CRASH.tumbleTime + CRASH.knockoutExtra);
       // If a patrol put you there - or is simply standing over you when you go
       // down - you are arrested rather than merely beaten. Checking proximity
@@ -550,7 +701,7 @@ export class World implements AiWorldView {
     if (this.localRacer.place !== prevPlace && this.state === 'racing') {
       events.push({ type: 'placeChange', place: this.localRacer.place, from: prevPlace });
     }
-    if (this.localRacer.state === 'finished' && this.state === 'racing') {
+    if (this.authority && this.localRacer.state === 'finished' && this.state === 'racing') {
       this.endRace('finished', events);
     }
 

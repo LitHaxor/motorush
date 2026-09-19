@@ -832,3 +832,175 @@ describe('punches thrown from another browser', () => {
     expect(w.requestAttackFor(w.rivals[0].id, 1)).toBe(false);
   });
 });
+
+describe('World: the race is not over when yours is', () => {
+  /** Put the local rider on the line and let them cross it. */
+  const finishLocal = (w: World): SimEvent[] => {
+    startRace(w);
+    w.localRacer.s = w.raceDistance - 3;
+    return race(w, 5, INPUT({ throttle: 1 }));
+  };
+
+  it('keeps the rest of the field racing after you cross the line', () => {
+    const w = new World({ seed: 21 });
+    finishLocal(w);
+    expect(w.state).toBe('finished');
+
+    const behind = w.rivals.filter((r) => r.finishTime == null);
+    expect(behind.length).toBeGreaterThan(0);
+    const before = behind.map((r) => r.s);
+
+    for (let i = 0; i < 60 * 3; i++) w.step(DT, INPUT());
+    // They are still riding, not frozen at the moment you finished.
+    expect(behind.every((r, i) => r.s > before[i])).toBe(true);
+    expect(w.raceComplete).toBe(false);
+    expect(w.fieldStillRacing).toBe(true);
+  });
+
+  it('brings them home and then calls the race complete', () => {
+    const w = new World({ seed: 22 });
+    finishLocal(w);
+    // Everyone left is put within sight of the line so this does not have to
+    // simulate the kilometres they actually had left.
+    for (const r of w.rivals) if (r.finishTime == null) r.s = w.raceDistance - 2;
+
+    let guard = 0;
+    while (!w.raceComplete && guard++ < 60 * 30) w.step(DT, INPUT());
+
+    expect(w.raceComplete).toBe(true);
+    expect(w.racers.every((r) => r.finishTime != null)).toBe(true);
+    // Real times, in the order they arrived - not the DNFs a frozen board gave.
+    const times = w.standingEntries().map((e) => e.time!);
+    expect(times.every((t) => t > 0)).toBe(true);
+    expect([...times].sort((a, b) => a - b)).toEqual(times);
+  });
+
+  it('stops simulating once nobody is left out there', () => {
+    const w = new World({ seed: 23 });
+    finishLocal(w);
+    for (const r of w.racers) r.finishTime ??= w.elapsed;
+    const rival = w.rivals[0];
+    rival.speed = 0;
+    // Complete: the step falls through to the scenery, which never moves a
+    // rider who has stopped.
+    expect(w.raceComplete).toBe(true);
+    const events = w.step(DT, INPUT({ throttle: 1 }));
+    expect(events).toHaveLength(0);
+  });
+
+  it('gives up on stragglers rather than running for ever', () => {
+    const w = new World({ seed: 24 });
+    finishLocal(w);
+    // A rider who will never get home - parked, and not being ridden anywhere.
+    for (const r of w.rivals) {
+      r.s = 0;
+      r.speedScale = 0;
+    }
+    // Stepped coarsely: the riders are parked, so there is nothing to
+    // integrate finely, and the backstop is minutes long by design.
+    let waited = 0;
+    while (!w.raceComplete && waited < w.postRaceGrace * 2) {
+      w.step(0.5, INPUT());
+      waited += 0.5;
+    }
+    expect(w.raceComplete).toBe(true);
+    // Long enough for a rider who crashes the whole way to still get home.
+    expect(w.postRaceGrace).toBeGreaterThan(w.raceDistance / 30);
+  });
+
+  it('takes your hands off the bars once your race is decided', () => {
+    const w = new World({ seed: 25 });
+    finishLocal(w);
+    const speed = w.localRacer.speed;
+    for (let i = 0; i < 60; i++) w.step(DT, INPUT({ throttle: 1 }));
+    // Still rolling out, but nothing you press is driving it any more.
+    expect(w.localRacer.speed).toBeLessThan(speed);
+  });
+
+  it('still lets the other riders punch each other', () => {
+    const w = new World({ seed: 26 });
+    finishLocal(w);
+    const rival = w.rivals.find((r) => r.state === 'ride' && r.finishTime == null)!;
+    // The host crossing the line first used to stop every remote punch
+    // landing for the rest of the race.
+    expect(w.inPlay).toBe(true);
+    expect(w.requestAttackFor(rival.id, 1)).toBe(true);
+  });
+
+  it('reports the race phase rather than your own verdict', () => {
+    const w = new World({ seed: 27 });
+    expect(w.phase).toBe('countdown');
+    startRace(w);
+    expect(w.phase).toBe('racing');
+    w.localRacer.s = w.raceDistance - 3;
+    race(w, 5, INPUT({ throttle: 1 }));
+    // Finished is YOUR word for it; the race itself is still being run.
+    expect(w.state).toBe('finished');
+    expect(w.phase).toBe('racing');
+  });
+
+  it('marks the rider holding this screen, not racer zero', () => {
+    const w = new World({ seed: 28 });
+    w.localRacer = w.racers[5];
+    startRace(w);
+    const mine = w.standingEntries().filter((e) => e.isPlayer);
+    expect(mine).toHaveLength(1);
+    expect(mine[0].name).toBe(w.racers[5].name);
+  });
+});
+
+describe('World: a guest does not decide its own ending', () => {
+  it('leaves the verdict alone when it is not the authority', () => {
+    const w = new World({ seed: 31 });
+    w.authority = false;
+    startRace(w);
+    // The health arriving from the host is a frame out of date, and deciding
+    // on it is what quietly ended a guest's race while it was merely down.
+    w.localRacer.health = 0;
+    race(w, 1, INPUT({ throttle: 1 }));
+    expect(w.state).toBe('racing');
+    expect(w.isOver).toBe(false);
+  });
+
+  it('does not end the race on its own finish either', () => {
+    const w = new World({ seed: 32 });
+    w.authority = false;
+    startRace(w);
+    w.localRacer.s = w.raceDistance - 3;
+    race(w, 3, INPUT({ throttle: 1 }));
+    expect(w.localRacer.state).toBe('finished');
+    expect(w.state).toBe('racing');
+  });
+
+  it('takes the ending the host hands it, times and all', () => {
+    const w = new World({ seed: 33 });
+    w.authority = false;
+    startRace(w);
+    race(w, 2, INPUT({ throttle: 1 }));
+
+    const events = w.concludeLocal('finished', 123.5);
+    expect(w.state).toBe('finished');
+    expect(w.localRacer.finishTime).toBe(123.5);
+    expect(events.some((e) => e.type === 'raceEnd')).toBe(true);
+    expect(w.result!.time).toBe(123.5);
+    expect(w.result!.standings.find((e) => e.isPlayer)!.name).toBe(w.localRacer.name);
+  });
+
+  it('takes an arrest the same way', () => {
+    const w = new World({ seed: 34 });
+    w.authority = false;
+    startRace(w);
+    w.concludeLocal('busted');
+    expect(w.state).toBe('busted');
+    expect(w.localRacer.state).toBe('busted');
+    expect(w.result!.reason).toBe('busted');
+  });
+
+  it('refuses a second verdict', () => {
+    const w = new World({ seed: 35 });
+    startRace(w);
+    w.concludeLocal('finished', 10);
+    expect(w.concludeLocal('busted')).toHaveLength(0);
+    expect(w.state).toBe('finished');
+  });
+});

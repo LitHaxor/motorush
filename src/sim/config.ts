@@ -3,9 +3,25 @@
 
 import type { DifficultyKey } from './types';
 
+/**
+ * How long a race is, in metres.
+ *
+ * Seven kilometres, the same at every difficulty. Races used to run 10-13km
+ * and stretched past the point where a lead means anything: whoever was in
+ * front at 4km had a minute of empty road to sit in, and the rider behind had
+ * no way back. At 7km the field is still together when the finish arrives, so
+ * a late overtake decides it - which is the whole point of racing somebody.
+ *
+ * Difficulty is expressed in the things that actually make a race hard -
+ * rival speed, traffic, how willing they are to hit you, and how quickly the
+ * police take an interest - rather than in how long you have to keep it up
+ * for. A longer race was never harder, only slower.
+ */
+export const RACE_DISTANCE = 7000;
+
 export const TRACK = {
   /** Distance to the finish line, in metres. */
-  raceDistance: 11500,
+  raceDistance: RACE_DISTANCE,
   /** Extra track generated past the finish so the world does not end abruptly. */
   runout: 600,
   /** Half the drivable asphalt width, in metres. */
@@ -275,9 +291,9 @@ export interface DifficultyPreset {
 }
 
 export const DIFFICULTY: Record<DifficultyKey, DifficultyPreset> = {
-  easy: { label: 'ROOKIE', rivalSkill: 0.9, traffic: 0.65, aggression: 0.6, distance: 10000, police: 1.4 },
-  normal: { label: 'RASHER', rivalSkill: 1.0, traffic: 0.9, aggression: 1.0, distance: 11500, police: 1.8 },
-  hard: { label: 'OUTLAW', rivalSkill: 1.02, traffic: 1.05, aggression: 1.4, distance: 13000, police: 2.0 },
+  easy: { label: 'ROOKIE', rivalSkill: 0.9, traffic: 0.65, aggression: 0.6, distance: RACE_DISTANCE, police: 1.4 },
+  normal: { label: 'RASHER', rivalSkill: 1.0, traffic: 0.9, aggression: 1.0, distance: RACE_DISTANCE, police: 1.8 },
+  hard: { label: 'OUTLAW', rivalSkill: 1.02, traffic: 1.05, aggression: 1.4, distance: RACE_DISTANCE, police: 2.0 },
 };
 
 export const POLICE = {

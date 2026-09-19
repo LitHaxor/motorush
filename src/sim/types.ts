@@ -11,7 +11,22 @@ export type RacerState = 'ride' | 'down' | 'finished' | 'busted';
 export type RiderPhase = 'tumble' | 'standing' | 'running' | 'lifting' | 'mounting';
 export type WeaponType = 'fist' | 'club' | 'baton';
 export type PickupKind = 'health' | 'club' | 'boost';
+/**
+ * How YOUR race is going: the three endings are yours alone, which is exactly
+ * what made them the wrong thing to put on the wire.
+ */
 export type RaceState = 'countdown' | 'racing' | 'finished' | 'busted' | 'wasted';
+
+/**
+ * How THE race is going, which is what every rider in a room shares.
+ *
+ * The host's own ending is nobody else's business - somebody has to cross the
+ * line first, and when the host did, every guest used to be handed the host's
+ * verdict as if it were their own: a host who got arrested put BUSTED up on
+ * seven other screens. This travels instead, and each rider reads their own
+ * ending off their own bike.
+ */
+export type RacePhase = 'countdown' | 'racing' | 'complete';
 export type EndReason = 'finished' | 'busted' | 'wasted';
 export type DifficultyKey = 'easy' | 'normal' | 'hard';
 export type CrashCause = 'traffic' | 'barrier';

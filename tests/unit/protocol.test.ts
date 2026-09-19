@@ -5,11 +5,12 @@ const STATE: StateMessage = {
   t: 'state',
   seq: 7,
   time: 12.5,
-  race: 'racing',
+  phase: 'racing',
   countdown: 0,
   racers: [{
     id: 3, s: 100, lateral: -1.5, speed: 40, lean: 0.2, health: 80, hop: 0,
     state: 'ride', riderPhase: 'standing', attackDir: 1, attackTimer: 0.24, place: 2,
+    finishTime: null,
   }],
   cars: [{
     id: 5, s: 300, lateral: 1.2, speed: 22, dir: 1, brake: 0, swerve: 0.2,
@@ -19,6 +20,7 @@ const STATE: StateMessage = {
   cops: [{
     id: 900, s: 80, lateral: 2, speed: 45, lean: 0, health: 100, hop: 0,
     state: 'ride', riderPhase: 'standing', attackDir: 0, attackTimer: 0, place: 8,
+    finishTime: null,
   }],
 };
 
@@ -174,5 +176,42 @@ describe('heartbeats', () => {
   it('does not choke on timestamps that are not numbers', () => {
     const pong = decode('{"t":"pong","id":3,"recv":"soon","send":null}');
     expect(pong).toEqual({ t: 'pong', id: 3, recv: 0, send: 0 });
+  });
+});
+
+describe('what a rider needs to know about the rest of the grid', () => {
+  it('carries a finishing time once a rider is home', () => {
+    const home: StateMessage = {
+      ...STATE,
+      racers: [{ ...STATE.racers[0], state: 'finished', finishTime: 118.25 }],
+    };
+    const back = decode(encode(home)) as StateMessage;
+    expect(back.racers[0].finishTime).toBe(118.25);
+    expect(back.racers[0].state).toBe('finished');
+  });
+
+  it('treats a missing or nonsense finishing time as "still racing"', () => {
+    // A rider who has not finished has no time, and a frame that claims one
+    // it cannot back up must not put a bogus result on somebody's board.
+    const raw = JSON.parse(encode(STATE));
+    delete raw.racers[0].finishTime;
+    raw.cops[0].finishTime = 'soon';
+    const back = decode(JSON.stringify(raw)) as StateMessage;
+    expect(back.racers[0].finishTime).toBeNull();
+    expect(back.cops[0].finishTime).toBeNull();
+  });
+
+  it('carries how the race is going, not how the host is going', () => {
+    for (const phase of ['countdown', 'racing', 'complete'] as const) {
+      const back = decode(encode({ ...STATE, phase })) as StateMessage;
+      expect(back.phase).toBe(phase);
+    }
+  });
+
+  it('refuses a phase it does not recognise', () => {
+    // 'busted' was a phase once, and it meant the HOST was busted - which is
+    // exactly the frame that used to end seven other people's races.
+    const raw = { ...JSON.parse(encode(STATE)), phase: 'busted' };
+    expect((decode(JSON.stringify(raw)) as StateMessage).phase).toBe('racing');
   });
 });

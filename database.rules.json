@@ -27,9 +27,13 @@
         // I, O, S and 0, 1, 5 - and must stay in step with CODE_ALPHABET in
         // src/net/lobby.ts, which is what actually generates them.
         "code":      { ".validate": "newData.isString() && newData.val().matches(/^[A-HJ-NP-RT-Z2-46-9]{4}$/)" },
-        // Set once, by the host, when the flag drops. Never rewound: a rider
-        // who could clear it would restart everyone else's race.
-        "startedAt": { ".validate": "newData.val() === now && !data.exists()" },
+        // Written by the host when the flag drops, and cleared by the host
+        // when the room comes back to the lobby for a rematch. Only the host
+        // can touch it - the lobby root refuses everyone else - so a rider
+        // still cannot restart a race from under the field. A start is always
+        // stamped now: back-dating one would put the room in a race that,
+        // as far as everyone joining is concerned, began before it existed.
+        "startedAt": { ".validate": "!newData.exists() || newData.val() === now" },
 
         // Fixed grid slots rather than a map keyed by uid. The rules language
         // has no way to count children - there is no numChildren() - so a

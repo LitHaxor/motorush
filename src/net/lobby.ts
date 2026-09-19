@@ -100,6 +100,18 @@ export interface RoomState {
   seats: Seat[];
   /** Set once the race is under way. */
   started: boolean;
+  /**
+   * When the flag dropped, on the server's clock. Doubles as the identity of
+   * this particular race: a rematch clears it and writes a fresh one, and that
+   * is how every rider tells "the race I have already run" from "a new one has
+   * just started" without a second field to keep in step.
+   */
+  startedAt: number | null;
+  /**
+   * The track everyone builds. A rematch rolls a new one, so this is read from
+   * the room each time rather than remembered from when we joined.
+   */
+  seed: number;
   hostUid: string;
 }
 
@@ -329,6 +341,28 @@ export async function startRace(db: Database, handle: LobbyHandle): Promise<void
   await set(ref(db, `${lobbyPath(handle.id)}/startedAt`), serverTimestamp());
 }
 
+/**
+ * Put the room back in the lobby, ready to go again.
+ *
+ * Clearing the flag is what makes a rematch possible at all: everyone watching
+ * sees the room stop being a race and become a waiting room again, and the
+ * host can drop the flag a second time. A new seed comes with it so the
+ * rematch is a different road - racing the same seven kilometres again is not
+ * much of a rematch.
+ *
+ * Only the host can do this. The rules refuse the lobby root to anybody else,
+ * which is what stops a rider restarting a race from under the field.
+ */
+export async function resetRace(
+  db: Database,
+  handle: LobbyHandle,
+  seed: number = randomSeed(),
+): Promise<void> {
+  if (!handle.isHost) return;
+  await set(ref(db, `${lobbyPath(handle.id)}/seed`), seed);
+  await remove(ref(db, `${lobbyPath(handle.id)}/startedAt`));
+}
+
 /** Watch the whole room: who is on the grid, and whether it has set off. */
 export function watchRoom(
   db: Database,
@@ -342,10 +376,13 @@ export function watchRoom(
       onChange(null);
       return;
     }
+    const startedAt = typeof record.startedAt === 'number' ? record.startedAt : null;
     onChange({
       code: record.code ?? '',
       seats: readSeats(record),
-      started: Boolean(record.startedAt),
+      started: startedAt !== null,
+      startedAt,
+      seed: record.seed,
       hostUid: record.host,
     });
   });

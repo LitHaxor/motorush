@@ -23,6 +23,17 @@
 
 * { box-sizing: border-box; }
 
+/*
+ * `hidden` has to actually hide.
+ *
+ * The attribute only carries a UA `display: none`, so any rule that sets a
+ * display of its own quietly beats it - which is why the elements below each
+ * had to restate it, and why an end screen ended up showing both its solo
+ * buttons and its room buttons at once. This is the backstop for every one of
+ * them, present and future.
+ */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -102,6 +113,52 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--hot-2);
   text-shadow: 0 2px 6px rgba(0,0,0,0.7);
 }
+
+/* --- running order ---
+ *
+ * The whole grid, all eight, with how far up or down the road each rider is
+ * from you. It lives under the place counter because that is where your eye
+ * already goes to ask "where am I", and this is the rest of that answer.
+ */
+.board {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  width: clamp(168px, 20vw, 210px);
+  font-size: clamp(10px, 1.2vw, 12px);
+  letter-spacing: 0.05em;
+}
+.board__row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) 2.2em auto;
+  gap: 6px; align-items: center;
+  padding: 3px 7px; border-radius: 5px;
+  background: rgba(0, 0, 0, 0.44);
+  border: 1px solid transparent;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+.board__dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.65);
+}
+/* A long handle truncates rather than pushing the gap off the row. */
+.board__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board__pos {
+  font-family: var(--display); font-size: 0.86em; color: var(--hot-2);
+  text-align: right;
+}
+.board__gap {
+  font-family: var(--mono); font-size: 0.86em; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 4.4em; text-align: right;
+}
+.board__row.is-you {
+  background: rgba(255, 90, 31, 0.3);
+  border-color: rgba(255, 90, 31, 0.55);
+  font-weight: 700;
+}
+/* Off the bike: still in the race, just not upright. */
+.board__row.is-down { opacity: 0.5; }
+.board__row.is-home .board__gap { color: var(--good); }
 
 .progress { min-width: min(30vw, 260px); text-align: right; }
 .progress__label { font-size: 11px; letter-spacing: 0.12em; color: var(--muted); margin-bottom: 4px; }
@@ -527,6 +584,12 @@ button { font-family: inherit; cursor: pointer; }
 .results .pos { font-family: var(--display); color: var(--hot-2); }
 .results .time { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
+/* Whether the board above is finished or still moving. */
+.results__note {
+  margin: -8px 0 18px; text-align: center;
+  font-size: 10px; letter-spacing: 0.2em; color: var(--muted);
+}
+
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; margin: 0 0 22px; }
 .stats > div {
   padding: 10px 6px; border-radius: 9px; background: rgba(255,255,255,0.05); border: 1px solid var(--edge);
@@ -701,6 +764,10 @@ button { font-family: inherit; cursor: pointer; }
   .place { font-size: 32px; }
   .timer { font-size: 15px; }
 
+  /* Narrower and tighter, so eight rows still clear the condition bar. */
+  .board { width: 44vw; font-size: 10px; gap: 1px; }
+  .board__row { padding: 2px 5px; gap: 4px; }
+
   /* Keep the heat and distance readouts clear of the place counter and of the
      buttons, and let them wrap rather than overlap. Mute and pause stack in
      that corner, so this clears both rather than just the one. */
@@ -752,6 +819,9 @@ button { font-family: inherit; cursor: pointer; }
 
   .place { font-size: 28px; }
   .speedo__value { font-size: 34px; }
+
+  .board { width: 150px; font-size: 9px; gap: 1px; }
+  .board__row { padding: 1px 5px; gap: 4px; }
   .touch__btn { width: 58px; height: 58px; }
   .touch__btn--gas { height: 74px; }
 

@@ -284,6 +284,106 @@ test.describe('an online match', () => {
     await guest.keyboard.up('KeyW');
   });
 
+  test('a guest who comes home first gets their result, and the race runs on', async ({ browser }) => {
+    // The bug this whole change exists for. A guest that crossed the line
+    // first was left riding a road that never ended: its own ending was only
+    // ever read off the HOST's race state, and the host was still out there.
+    // Worse, the moment the host did finish it stopped simulating at all and
+    // took every other rider's world away with it.
+    const host = await openRider(browser, 'HOST');
+    const guest = await openRider(browser, 'GUEST');
+
+    await host.click('#btn-quick');
+    await inLobby(host);
+    await guest.click('#btn-quick');
+    await inLobby(guest);
+    await host.click('#btn-launch');
+    await Promise.all([racing(host), racing(guest)]);
+
+    await guest.waitForFunction(() => (window.motorush!.online()?.buffered ?? 0) > 0, null, {
+      timeout: 30_000,
+    });
+
+    // Put the guest's bike on the line. The host owns every rider's position,
+    // so this is done on the host - which is exactly how it happens for real.
+    const guestSeat = (await online(guest))!.seat;
+    await host.evaluate((seat) => {
+      const w = window.motorush!.world()!;
+      const them = w.racers.find((r) => r.id === seat)!;
+      them.s = w.raceDistance - 8;
+      them.speed = 60;
+    }, guestSeat);
+
+    // The guest's own result, on the guest's screen, while the host races on.
+    await expect(guest.locator('#screen-finish')).toBeVisible({ timeout: 45_000 });
+    await expect(guest.locator('#finish-stamp')).toHaveText('1ST');
+    await expect(guest.locator('#finish-results li.is-player')).toContainText('GUEST');
+    // A time, not a blank: the host's clock is the one everybody agrees on.
+    await expect(guest.locator('#finish-results li.is-player .time')).toHaveText(/\d:\d\d/);
+
+    // The host is still racing, and its road is still moving.
+    expect(await host.evaluate(() => window.motorush!.mode())).toBe('racing');
+    const hostBefore = await host.evaluate(() => window.motorush!.world()!.elapsed);
+    await expect
+      .poll(() => host.evaluate(() => window.motorush!.world()!.elapsed), { timeout: 30_000 })
+      .toBeGreaterThan(hostBefore + 1);
+
+    // And the guest's board is live rather than a photograph: the riders still
+    // out there keep moving on it.
+    await expect(guest.locator('#finish-note')).toContainText(/STILL ON/i);
+
+    // The way out of the room is on the screen, both halves of it.
+    await expect(guest.locator('#finish-room-actions')).toBeVisible();
+    await expect(guest.locator('#finish-room-actions [data-action="lobby"]')).toBeVisible();
+    await expect(guest.locator('#finish-room-actions [data-action="leave"]')).toBeVisible();
+
+    // Stepping back into the room keeps the seat rather than leaving it.
+    await guest.click('#finish-room-actions [data-action="lobby"]');
+    await inLobby(guest);
+    expect((await online(guest))?.seat).toBe(guestSeat);
+  });
+
+  test('the host crossing the line does not take the road away from anyone', async ({ browser }) => {
+    const host = await openRider(browser, 'HOST');
+    const guest = await openRider(browser, 'GUEST');
+
+    await host.click('#btn-quick');
+    await inLobby(host);
+    await guest.click('#btn-quick');
+    await inLobby(guest);
+    await host.click('#btn-launch');
+    await Promise.all([racing(host), racing(guest)]);
+
+    await guest.waitForFunction(() => (window.motorush!.online()?.buffered ?? 0) > 0, null, {
+      timeout: 30_000,
+    });
+
+    // The host finishes. Everyone else is still kilometres from the line.
+    await host.evaluate(() => {
+      const w = window.motorush!.world()!;
+      w.localRacer.s = w.raceDistance - 8;
+      w.localRacer.speed = 60;
+    });
+    await expect(host.locator('#screen-finish')).toBeVisible({ timeout: 45_000 });
+
+    // The guest is still racing - not holding a BUSTED screen of somebody
+    // else's, and not sitting on a road that stopped moving.
+    expect(await guest.evaluate(() => window.motorush!.mode())).toBe('racing');
+    await expect(guest.locator('#screen-finish')).toBeHidden();
+
+    // Snapshots keep arriving, which is the host still simulating for them.
+    const seen = await guest.evaluate(() => window.motorush!.world()!.elapsed);
+    await expect
+      .poll(() => guest.evaluate(() => window.motorush!.world()!.elapsed), { timeout: 30_000 })
+      .toBeGreaterThan(seen + 1);
+    await guest.keyboard.down('KeyW');
+    const where = await guest.evaluate(() => window.motorush!.world()!.localRacer.s);
+    await expect
+      .poll(() => guest.evaluate(() => window.motorush!.world()!.localRacer.s), { timeout: 30_000 })
+      .toBeGreaterThan(where + 20);
+    await guest.keyboard.up('KeyW');
+  });
+
   test('a wrong code is refused without leaving the menu', async ({ browser }) => {
     const rider = await openRider(browser, 'LOST');
 

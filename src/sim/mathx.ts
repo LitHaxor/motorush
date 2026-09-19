@@ -22,15 +22,45 @@ export function approach(a: number, b: number, maxDelta: number): number {
 export const mps2kmh = (v: number): number => v * 3.6;
 
 /**
- * Distance for the end-of-race panel, in kilometres. Races run 3.8-6.6 km, so
- * metres put a four-digit number next to a two-digit one and the row stopped
- * scanning as a set. Two decimals keeps a short bust ("0.18 km") legible
- * without making a full race read as spuriously precise.
+ * Distance for the end-of-race panel, in kilometres. A race is 7 km, so metres
+ * put a four-digit number next to a two-digit one and the row stopped scanning
+ * as a set. Two decimals keeps a short bust ("0.18 km") legible without making
+ * a full race read as spuriously precise.
  */
 export const formatKm = (metres: number): string => {
   const km = Number.isFinite(metres) ? Math.max(0, metres) / 1000 : 0;
   return `${km.toFixed(2)} km`;
 };
+
+/**
+ * How far ahead or behind somebody is, as the standings board prints it.
+ *
+ * Signed from the reader's point of view: `+13 m` is thirteen metres up the
+ * road, `-30 m` is thirty metres back. Past a kilometre the metre is noise and
+ * only gets in the way of reading the number, so it switches to kilometres.
+ */
+export const formatGap = (metres: number): string => {
+  if (!Number.isFinite(metres)) return '';
+  const sign = metres >= 0 ? '+' : '-';
+  const away = Math.abs(metres);
+  if (away < 1000) return `${sign}${Math.round(away)} m`;
+  return `${sign}${(away / 1000).toFixed(1)} km`;
+};
+
+/**
+ * A finishing time short enough to sit in a HUD row.
+ *
+ * The results board has the room for milliseconds; a line on the standings
+ * list does not, and tenths are as fine as anyone reads at a glance anyway.
+ */
+export function formatShortTime(seconds: number): string {
+  let s = seconds;
+  if (!Number.isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  const tenths = Math.floor((s * 10) % 10);
+  return `${m}:${String(sec).padStart(2, '0')}.${tenths}`;
+}
 
 /** Deterministic PRNG (mulberry32) so races are reproducible per seed. */
 export function makeRng(seed = 1): Rng {

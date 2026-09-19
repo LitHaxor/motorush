@@ -24,6 +24,7 @@ export function captureRacers(racers: readonly Racer[]): RacerSnapshot[] {
     attackDir: r.attackDir,
     attackTimer: round(r.attackTimer, 2),
     place: r.place,
+    finishTime: r.finishTime == null ? null : round(r.finishTime, 2),
   }));
 }
 
@@ -166,6 +167,7 @@ export function applyRacers(
     racer.attackDir = s.attackDir;
     racer.attackTimer = s.attackTimer;
     racer.place = s.place;
+    racer.finishTime = s.finishTime;
   }
 }
 
@@ -209,6 +211,9 @@ export function reconcileLocalRacer(
   // The host owns everything that is not our own motion.
   racer.health = snapshot.health;
   racer.place = snapshot.place;
+  // Including when we crossed the line: our own clock is a prediction, and a
+  // result board wants the time the race was actually run in.
+  racer.finishTime = snapshot.finishTime;
 
   const wasRiding = racer.state === 'ride';
   racer.state = snapshot.state;
@@ -275,6 +280,7 @@ export function lerpRacers(
         ? a.attackTimer
         : a.attackTimer + (b.attackTimer - a.attackTimer) * k,
       place: a.place,
+      finishTime: a.finishTime,
     };
   });
 }
@@ -339,6 +345,21 @@ export class SnapshotBuffer {
     const newest = this.held.at(-1);
     if (!newest) return Infinity;
     return Math.max(0, localNowMs - newest.localAtMs);
+  }
+
+  /**
+   * Throw away everything held, for a race that is not the one these frames
+   * are about.
+   *
+   * The sequence number is deliberately kept: it belongs to the link, not to
+   * the race, and forgetting it would let a frame that is genuinely stale be
+   * accepted as new. What must go is the frames themselves - they carry the
+   * previous race's clock, which reads minutes ahead of the one starting, and
+   * a buffer is drained by comparing those clocks.
+   */
+  clear(): void {
+    this.held = [];
+    this.lastArrivalMs = null;
   }
 
   /** Take a frame. Out-of-order and duplicate frames are dropped. */

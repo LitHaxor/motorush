@@ -1,8 +1,8 @@
 // Full-screen overlays: loading, splash/menu, pause, and the three end screens
 // (BUSTED, WASTED and the finish board).
 
-import type { DifficultyKey, RaceResult } from '../sim/types';
-import { formatTime, ordinal, mps2kmh, formatKm } from '../sim/mathx';
+import type { DifficultyKey, RaceResult, StandingEntry } from '../sim/types';
+import { formatTime, formatGap, ordinal, mps2kmh, formatKm } from '../sim/mathx';
 import {
   generateRiderName,
   initialRiderName,
@@ -53,6 +53,29 @@ export interface StartOptions {
   difficulty: DifficultyKey;
 }
 
+/**
+ * What the board should say right now.
+ *
+ * The finish screen is not a photograph. Cross the line first and six riders
+ * are still out there settling the rest of the places, so the results list
+ * keeps being handed this until the last of them is in.
+ */
+export interface ResultsView {
+  standings: readonly StandingEntry[];
+  /** For working out how far a rider still out on the road has left to go. */
+  raceDistance: number;
+  /** Nobody left racing: the times on the board are final. */
+  complete: boolean;
+}
+
+export interface ResultOptions {
+  /**
+   * In a room. The buttons stop being about racing again on your own and
+   * start being about the room: wait for the next one, or get out.
+   */
+  inRoom: boolean;
+}
+
 export interface ScreenCallbacks {
   onStart(opts: StartOptions): void;
   /** Quick Match, a new private room, or a code somebody read out. */
@@ -60,6 +83,8 @@ export interface ScreenCallbacks {
   /** Owner dropped the flag. */
   onLaunch(): void;
   onLeaveRoom(): void;
+  /** Done racing, but staying in the room: wait for the next one. */
+  onBackToLobby(): void;
   onResume(): void;
   /** Give up on the link and finish the race against bots. */
   onContinueOffline(): void;
@@ -138,6 +163,8 @@ function statTile(label: string, value: string): HTMLDivElement {
 export class Screens {
   private current: ScreenName | null = null;
   private difficulty: DifficultyKey = 'normal';
+  /** What the results board last said, so a live refresh can do nothing. */
+  private resultsSignature = '';
 
   constructor(private readonly callbacks: ScreenCallbacks) {
     this.wireSplash();
@@ -291,7 +318,20 @@ export class Screens {
   private wirePause(): void {
     $('btn-resume').addEventListener('click', () => this.callbacks.onResume());
     $('btn-restart-pause').addEventListener('click', () => this.callbacks.onRestart());
+    $('btn-pause-lobby').addEventListener('click', () => this.callbacks.onBackToLobby());
     $('btn-quit').addEventListener('click', () => this.callbacks.onQuit());
+  }
+
+  /**
+   * Which way out the pause menu offers.
+   *
+   * Restarting is a thing you can do to your own race and not to anybody
+   * else's, so in a room it is replaced by stepping out of the race and back
+   * into the room the others are still riding in.
+   */
+  setPauseRoom(inRoom: boolean): void {
+    $('btn-restart-pause').hidden = inRoom;
+    $('btn-pause-lobby').hidden = !inRoom;
   }
 
   private wireLink(): void {
@@ -335,10 +375,25 @@ export class Screens {
       $(id).addEventListener('click', (e) => {
         const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-action]');
         if (!btn) return;
-        if (btn.dataset.action === 'restart') this.callbacks.onRestart();
-        else this.callbacks.onQuit();
+        switch (btn.dataset.action) {
+          case 'restart': this.callbacks.onRestart(); break;
+          case 'lobby': this.callbacks.onBackToLobby(); break;
+          // Leaving the room and going to the menu are the same journey; the
+          // button says the part the player cares about, which is that the
+          // seat they were holding is given up.
+          case 'leave': this.callbacks.onQuit(); break;
+          default: this.callbacks.onQuit(); break;
+        }
       });
     }
+  }
+
+  /** Show the room's buttons instead of the solo ones on an end screen. */
+  private setRoomActions(screen: 'busted' | 'wasted' | 'finish', inRoom: boolean): void {
+    const solo = $(`screen-${screen}`).querySelector<HTMLElement>('.verdict__actions');
+    const room = $(`${screen}-room-actions`);
+    if (solo) solo.hidden = inRoom;
+    room.hidden = !inRoom;
   }
 
   // ------------------------------------------------------------------ show
@@ -363,7 +418,10 @@ export class Screens {
   }
 
   /** Render the appropriate end screen for a finished race. */
-  showResult(result: RaceResult): void {
+  showResult(result: RaceResult, options: ResultOptions = { inRoom: false }): void {
+    for (const screen of ['busted', 'wasted', 'finish'] as const) {
+      this.setRoomActions(screen, options.inRoom);
+    }
     const shared: [string, string][] = [
       ['TIME', formatTime(result.time)],
       ['TOP SPEED', `${Math.round(mps2kmh(result.topSpeed))} km/h`],
@@ -404,25 +462,64 @@ export class Screens {
         ? 'On the podium — but not on top.'
         : 'You finished. Barely.';
 
+    this.showResults({
+      standings: result.standings,
+      raceDistance: result.raceDistance,
+      // Finishing first does not finish the race. Whether it is over is
+      // something only the world knows, and it says so on the next refresh.
+      complete: result.standings.every((e) => e.time != null),
+    });
+
+    $('finish-stats').replaceChildren(...shared.map(([l, v]) => statTile(l, v)));
+    this.show('finish');
+  }
+
+  /**
+   * Redraw the results board with wherever the race has got to.
+   *
+   * Called every frame while the finish screen is up, so it writes nothing
+   * unless something actually moved - the board is eight rows and most frames
+   * change none of them.
+   */
+  showResults(view: ResultsView): void {
+    const rows = view.standings.map((entry) => [
+      String(entry.place),
+      entry.name,
+      entry.time != null
+        ? formatTime(entry.time)
+        // Still out there: how much road they have left, which is the only
+        // honest thing to print. DNF is for riders who never got home.
+        : view.complete
+          ? 'DNF'
+          : formatGap(-Math.max(0, view.raceDistance - entry.s)),
+      entry.isPlayer ? 'you' : '',
+    ] as const);
+
+    const signature = rows.map((r) => r.join('\u0000')).join('\u0001');
+    if (signature === this.resultsSignature) return;
+    this.resultsSignature = signature;
+
     $('finish-results').replaceChildren(
-      ...result.standings.map((entry) => {
+      ...rows.map(([place, name, time, you]) => {
         const li = document.createElement('li');
-        if (entry.isPlayer) li.className = 'is-player';
+        if (you) li.className = 'is-player';
         const pos = document.createElement('span');
         pos.className = 'pos';
-        pos.textContent = String(entry.place);
-        const name = document.createElement('span');
-        name.textContent = entry.name;
-        const time = document.createElement('span');
-        time.className = 'time';
-        time.textContent = entry.time != null ? formatTime(entry.time) : 'DNF';
-        li.append(pos, name, time);
+        pos.textContent = place;
+        const who = document.createElement('span');
+        who.textContent = name;
+        const when = document.createElement('span');
+        when.className = 'time';
+        when.textContent = time;
+        li.append(pos, who, when);
         return li;
       }),
     );
 
-    $('finish-stats').replaceChildren(...shared.map(([l, v]) => statTile(l, v)));
-    this.show('finish');
+    setText(
+      $('finish-note'),
+      view.complete ? 'EVERY RIDER IS IN' : 'THE RACE IS STILL ON — THIS BOARD IS LIVE',
+    );
   }
 }
 
