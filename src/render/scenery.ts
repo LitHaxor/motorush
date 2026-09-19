@@ -811,8 +811,11 @@ export function buildCrossings(
   if (!crossings.length) return { group, dispose() {} };
 
   const zebraTex = makeZebraTexture();
-  const zebraMat = new THREE.MeshBasicMaterial({
+  // Lit, like the rest of the road paint - unlit white stripes glow at dusk.
+  const zebraMat = new THREE.MeshStandardMaterial({
     map: zebraTex,
+    roughness: 0.75,
+    metalness: 0,
     transparent: true,
     depthWrite: false,
     polygonOffset: true,

@@ -267,8 +267,12 @@ export function buildRoad(
   // Their own ribbon just above the asphalt: the paint stays sharp while the
   // road texture below tiles at its own real-world scale.
   const markTex = makeMarkingsTexture({ halfWidth: half });
-  const markMat = new THREE.MeshBasicMaterial({
+  // Lit, not unlit: road paint is still paint at night. Unlit white lines
+  // stay at full brightness after dark and bloom into glowing strips.
+  const markMat = new THREE.MeshStandardMaterial({
     map: markTex,
+    roughness: 0.75,
+    metalness: 0,
     transparent: true,
     depthWrite: false,
     polygonOffset: true,
@@ -587,9 +591,10 @@ function checkerStrips(track: Track, s: number, length = 3, squaresAcross = 14):
   const tex = makeCheckerTexture({ squares: 2 });
   const rows = Math.max(1, Math.round((length / (track.halfWidth * 2)) * squaresAcross));
   tex.repeat.set(squaresAcross / 2, rows / 2);
-  // Unlit: painted checks should read as black and white, not wash out under
-  // a midday sun.
-  const mat = new THREE.MeshBasicMaterial({ map: tex });
+  // Lit like the tarmac it is painted on. Unlit renders the white squares at
+  // full brightness whatever the time of day, which at dusk is far brighter
+  // than anything around it and trips the bloom pass into a glowing slab.
+  const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0 });
 
   const meshes: THREE.Mesh[] = [];
   for (const sign of [-1, 1]) {
