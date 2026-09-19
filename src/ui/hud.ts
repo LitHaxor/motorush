@@ -82,8 +82,10 @@ export class Hud {
     this.timer.textContent = formatTime(world.elapsed);
 
     const travelled = Math.max(0, Math.min(p.s, world.raceDistance));
-    this.distance.textContent = String(Math.round(travelled));
-    this.total.textContent = String(world.raceDistance);
+    // Kilometres, to match the end-of-race panel. Two decimals move often
+    // enough at racing speed to read as progress rather than a frozen number.
+    this.distance.textContent = (travelled / 1000).toFixed(2);
+    this.total.textContent = (world.raceDistance / 1000).toFixed(2);
     this.progress.style.width = `${world.progress * 100}%`;
 
     const pct = clamp(p.health / p.maxHealth, 0, 1);

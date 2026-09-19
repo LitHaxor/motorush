@@ -21,6 +21,17 @@ export function approach(a: number, b: number, maxDelta: number): number {
 
 export const mps2kmh = (v: number): number => v * 3.6;
 
+/**
+ * Distance for the end-of-race panel, in kilometres. Races run 3.8-6.6 km, so
+ * metres put a four-digit number next to a two-digit one and the row stopped
+ * scanning as a set. Two decimals keeps a short bust ("0.18 km") legible
+ * without making a full race read as spuriously precise.
+ */
+export const formatKm = (metres: number): string => {
+  const km = Number.isFinite(metres) ? Math.max(0, metres) / 1000 : 0;
+  return `${km.toFixed(2)} km`;
+};
+
 /** Deterministic PRNG (mulberry32) so races are reproducible per seed. */
 export function makeRng(seed = 1): Rng {
   let a = seed >>> 0;

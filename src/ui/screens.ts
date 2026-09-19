@@ -2,7 +2,7 @@
 // (BUSTED, WASTED and the finish board).
 
 import type { DifficultyKey, RaceResult } from '../sim/types';
-import { formatTime, ordinal, mps2kmh } from '../sim/mathx';
+import { formatTime, ordinal, mps2kmh, formatKm } from '../sim/mathx';
 
 export type ScreenName = 'loading' | 'splash' | 'pause' | 'busted' | 'wasted' | 'finish';
 
@@ -127,7 +127,7 @@ export class Screens {
   showResult(result: RaceResult): void {
     const shared: [string, string][] = [
       ['TIME', formatTime(result.time)],
-      ['TOP SPEED', `${Math.round(mps2kmh(result.topSpeed))}`],
+      ['TOP SPEED', `${Math.round(mps2kmh(result.topSpeed))} km/h`],
       ['TAKEDOWNS', String(result.takedowns)],
       ['CRASHES', String(result.crashes)],
     ];
@@ -135,7 +135,7 @@ export class Screens {
     if (result.reason === 'busted') {
       $('busted-stats').replaceChildren(
         ...shared.map(([l, v]) => statTile(l, v)),
-        statTile('DISTANCE', `${Math.round(result.distance)}m`),
+        statTile('DISTANCE', formatKm(result.distance)),
       );
       this.show('busted');
       return;
@@ -144,7 +144,7 @@ export class Screens {
     if (result.reason === 'wasted') {
       $('wasted-stats').replaceChildren(
         ...shared.map(([l, v]) => statTile(l, v)),
-        statTile('DISTANCE', `${Math.round(result.distance)}m`),
+        statTile('DISTANCE', formatKm(result.distance)),
       );
       this.show('wasted');
       return;

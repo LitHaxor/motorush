@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { clamp, lerp, damp, approach, makeRng, formatTime, ordinal, mps2kmh } from '../../src/sim/mathx';
+import { clamp, lerp, damp, approach, makeRng, formatTime, ordinal, mps2kmh, formatKm } from '../../src/sim/mathx';
 
 describe('mathx', () => {
   it('clamps to the given range', () => {
@@ -70,5 +70,23 @@ describe('mathx', () => {
 
   it('converts m/s to km/h', () => {
     expect(mps2kmh(10)).toBeCloseTo(36);
+  });
+});
+
+describe('formatKm', () => {
+  it('reports race distances in kilometres', () => {
+    expect(formatKm(5200)).toBe('5.20 km');
+    expect(formatKm(6600)).toBe('6.60 km');
+  });
+
+  it('keeps a short bust legible rather than rounding it to nothing', () => {
+    expect(formatKm(179)).toBe('0.18 km');
+    expect(formatKm(20)).toBe('0.02 km');
+  });
+
+  it('never shows a negative or a NaN distance', () => {
+    expect(formatKm(-40)).toBe('0.00 km');
+    expect(formatKm(Number.NaN)).toBe('0.00 km');
+    expect(formatKm(Number.POSITIVE_INFINITY)).toBe('0.00 km');
   });
 });
