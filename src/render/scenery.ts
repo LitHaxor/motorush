@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import type { Track } from '../sim/track';
 import type { Rng, PickupKind } from '../sim/types';
 import type { SkyPreset } from './palette';
-import { makeTerrainElevation, ribbonGeometry } from './roadmesh';
+import { makeTerrainElevation, ribbonGeometry, START_RUNUP } from './roadmesh';
 import {
   makeSignTexture, makeFacadeTexture, makeCheckerTexture, makeZebraTexture, makeBarkTexture,
 } from './textures';
@@ -92,7 +92,7 @@ export function buildScenery(
   const treePlacements: TreeSpot[] = [];
 
   if (treeVariants.length) {
-    for (let s = 20; s < track.length; s += rng.range(6, 13)) {
+    for (let s = -START_RUNUP; s < track.length; s += rng.range(6, 13)) {
       const biome = biomeAt(biomes, s);
       const density = DENSITY_BY_BIOME[biome] ?? DENSITY_BY_BIOME.country;
       const species = SPECIES_BY_BIOME[biome] ?? SPECIES_BY_BIOME.country;
@@ -244,7 +244,7 @@ export function buildScenery(
   // the light beside the road are what sell it.
   if (grassTuft) {
     const tufts: { s: number; lateral: number; size: number; rot: number; tint: number }[] = [];
-    for (let s = 10; s < track.length; s += rng.range(1.6, 4.2)) {
+    for (let s = -START_RUNUP; s < track.length; s += rng.range(1.6, 4.2)) {
       const biome = biomeAt(biomes, s);
       if (biome === 'city') continue;
       const sea = coastAt(biomes, s);
@@ -347,12 +347,12 @@ export function buildScenery(
   // ------------------------------------------------------------ guardrails
   // Posts march down both shoulders; they read as a speed reference.
   const postSpacing = 4;
-  const postCount = Math.floor(track.length / postSpacing) * 2;
+  const postCount = Math.floor((track.length + START_RUNUP) / postSpacing) * 2 + 4;
   const postGeo = new THREE.BoxGeometry(0.14, 1.0, 0.14);
   const postMat = new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.5, metalness: 0.65 });
   const posts = new THREE.InstancedMesh(postGeo, postMat, postCount);
   let pi = 0;
-  for (let s = 0; s < track.length && pi < postCount; s += postSpacing) {
+  for (let s = -START_RUNUP; s < track.length && pi < postCount; s += postSpacing) {
     for (const sign of [-1, 1]) {
       if (pi >= postCount) break;
       // Same line as the guardrail beam in roadmesh.ts.

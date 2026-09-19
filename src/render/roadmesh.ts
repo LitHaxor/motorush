@@ -11,6 +11,13 @@ import {
 import { applyPbr, type GroundTextures } from './assets';
 import { blendAt, coastAt, type BiomeSegment } from '../sim/biomes';
 
+/**
+ * How far the ground is built behind the start line. The grid sits at s=0 and
+ * the chase camera a few metres behind that, so without a run-up the bottom of
+ * the screen during the countdown is just open sky.
+ */
+export const START_RUNUP = 120;
+
 export interface Band {
   /** Constant offset, or one that varies along the track (the median does). */
   lateral: number | ((s: number) => number);
@@ -32,7 +39,7 @@ export function ribbonGeometry(
   vScale: number,
   elevate?: ElevateFn,
   step = track.step,
-  fromS = 0,
+  fromS = -START_RUNUP,
   toS = track.length,
 ): THREE.BufferGeometry {
   const rows = Math.max(2, Math.ceil((toS - fromS) / step) + 1);
@@ -186,14 +193,14 @@ export function railGeometry(
   step = track.step,
 ): THREE.BufferGeometry {
   const at = (s: number) => (typeof lateral === 'function' ? lateral(s) : lateral);
-  const rows = Math.ceil(track.length / step) + 1;
+  const rows = Math.ceil((track.length + START_RUNUP) / step) + 1;
   const positions = new Float32Array(rows * 2 * 3);
   const uvs = new Float32Array(rows * 2 * 2);
   const indices: number[] = [];
   const p = { x: 0, y: 0, z: 0, heading: 0, curvature: 0 };
 
   for (let r = 0; r < rows; r++) {
-    const s = Math.min(track.length, r * step);
+    const s = Math.min(track.length, -START_RUNUP + r * step);
     track.toWorld(s, at(s), p);
     for (let c = 0; c < 2; c++) {
       const i = (r * 2 + c) * 3;
@@ -202,7 +209,7 @@ export function railGeometry(
       positions[i + 2] = p.z;
       const j = (r * 2 + c) * 2;
       uvs[j] = c;
-      uvs[j + 1] = s / 4; // one texture tile every 4 m of rail
+      uvs[j + 1] = (s + START_RUNUP) / 4; // one texture tile every 4 m of rail
     }
   }
   for (let r = 0; r < rows - 1; r++) {
