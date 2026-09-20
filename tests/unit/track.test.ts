@@ -355,3 +355,46 @@ describe('Track: committing to a fork', () => {
     expect(t.isOffRoad(0, fork.to + TRACK.medianRamp + 20)).toBe(false);
   });
 });
+
+describe('what a split is made of', () => {
+  const split = [{ from: 500, to: 1500, halfWidth: TRACK.forkHalfWidth, fork: true }];
+  const inTown = [{ from: 0, to: 3000, kind: 'city' as const, side: 0 as const }];
+  const inCountry = [{ from: 0, to: 3000, kind: 'country' as const, side: 0 as const }];
+
+  it('makes a city island solid, because it is a block of buildings', () => {
+    const t = new Track({ seed: 3, length: 3000, divided: split, biomes: inTown });
+    const mid = 1000;
+    const median = t.medianAt(mid);
+    expect(median).toBeGreaterThan(TRACK.forkImpassableFrom);
+    expect(t.isBlocked(0, mid)).toBe(true);
+    expect(t.isBlocked(median * 0.5, mid)).toBe(true);
+    // The carriageways either side of it stay rideable.
+    expect(t.isBlocked(median + 2, mid)).toBe(false);
+    expect(t.isBlocked(-(median + 2), mid)).toBe(false);
+  });
+
+  it('leaves a country island rideable, because it is grass with trees on it', () => {
+    // The trees are obstacles in their own right. Walling off the whole strip
+    // put an invisible barrier across open grass, and a rider cutting the
+    // corner went down with nothing in sight to have hit.
+    const t = new Track({ seed: 3, length: 3000, divided: split, biomes: inCountry });
+    expect(t.medianAt(1000)).toBeGreaterThan(TRACK.forkImpassableFrom);
+    expect(t.isBlocked(0, 1000)).toBe(false);
+  });
+
+  it('leaves a painted median rideable wherever it is', () => {
+    for (const biomes of [inTown, inCountry]) {
+      const t = new Track({ seed: 3, length: 3000, biomes, divided: [
+        { from: 500, to: 1500, halfWidth: TRACK.medianHalfWidth, fork: false },
+      ] });
+      expect(t.medianAt(1000)).toBeLessThan(TRACK.forkImpassableFrom);
+      expect(t.isBlocked(0, 1000)).toBe(false);
+    }
+  });
+
+  it('forgives the kerb of a city island', () => {
+    const t = new Track({ seed: 3, length: 3000, divided: split, biomes: inTown });
+    const median = t.medianAt(1000);
+    expect(t.isBlocked(median - TRACK.medianForgiveness * 0.5, 1000)).toBe(false);
+  });
+});

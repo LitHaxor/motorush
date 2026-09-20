@@ -226,6 +226,28 @@ export function stepRacer(
   r.lateral += dx;
   r.staggerPush = damp(r.staggerPush, 0, 5, dt);
 
+  // Straight into whatever is planted down the middle of a split.
+  //
+  // Handled before the barrier below, and harder: a guardrail is a glance off
+  // something designed to deflect you, while this is a building. Severity is
+  // full, so the rider is thrown rather than dropped.
+  if (track.isBlocked(r.lateral, r.s)) {
+    const into = Math.sign(r.lateral || 1);
+    // Put them back on the carriageway they came from, outside the kerb.
+    r.lateral = into * (track.medianAt(r.s) + 1.5);
+    if (r.speed > CRASH.barrierCrashSpeed) {
+      const fatal = damageRacer(r, HEALTH.barrierDamage * 1.6);
+      if (knockDown(r, 1)) {
+        events.push({ type: 'crash', racer: r, cause: 'barrier', fatal });
+      }
+      return events;
+    }
+    // Crawling into it is a shove and a scrape, same as a rail.
+    r.staggerPush = -into * 2.6;
+    r.speed *= 0.7;
+    return events;
+  }
+
   // Barrier / scenery strike at the very edge of the corridor.
   if (track.isOutOfBounds(r.lateral, r.s)) {
     const into = Math.sign(r.lateral || 1);

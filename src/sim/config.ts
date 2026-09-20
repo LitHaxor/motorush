@@ -188,6 +188,15 @@ export const CITY = {
   islandPavement: 2.6,
   /** An island narrower than this is just a kerb, not a city block. */
   islandMinHalfWidth: 4,
+  /**
+   * How long a zebra crossing is, measured along the road.
+   *
+   * Shared by the paint and the people, because they had drifted apart: the
+   * stripes were laid from the crossing point forward, and the walkers were
+   * scattered either side of it, so half of them crossed on bare tarmac a
+   * metre behind the crossing. Whatever this number is, both read it.
+   */
+  crossingLength: 3.2,
 };
 
 /**
@@ -237,6 +246,30 @@ export const TRAFFIC = {
   accel: 5,
   /** Gap a driver tries to leave behind a rider, in metres. */
   followGap: 7,
+  /**
+   * How much faster than a car the rider must be before one is recycled in
+   * behind them.
+   *
+   * Without it, a car could be dropped sixty metres back doing thirty metres a
+   * second while the rider was crawling away from a crash - and it simply
+   * drove into them. A margin rather than a straight comparison so a car is
+   * not spawned behind somebody it will sit level with for the next kilometre.
+   */
+  overtakeMargin: 4,
+  /**
+   * How much road ahead of EVERY rider must stay clear when a car is recycled.
+   *
+   * Not just the rider the car is being placed for. Traffic is recycled into
+   * the far end of one rider's view, which at eight riders strung down a
+   * kilometre of road is somebody else's front garden - so a car could appear
+   * a few metres in front of a rider who had done nothing but be in the wrong
+   * place. At racing speed this is about seven seconds of warning.
+   */
+  spawnClearAhead: 430,
+  /** And behind, so nothing pops into a mirror either. */
+  spawnClearBehind: 45,
+  /** Attempts at finding a clear slot before taking the best of a bad lot. */
+  spawnTries: 8,
 };
 
 export const RIVALS = {

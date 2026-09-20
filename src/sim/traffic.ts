@@ -75,37 +75,208 @@ export class TrafficSystem {
     return pool[this.rng.int(0, 1)];
   }
 
-  respawn(car: Car, playerS: number, initial = false): Car {
+  /**
+   * Everybody the road has to look busy for.
+   *
+   * Riders bunch for most of a race, so this is usually one cluster and costs
+   * nothing. It matters at the ends: a rider a kilometre clear of the field
+   * should still be passing cars.
+   */
+  private interestPoints(
+    racers: readonly Racer[],
+    playerS: number,
+    playerSpeed: number,
+  ): Array<{ s: number; speed: number }> {
+    const points = [{ s: playerS, speed: playerSpeed }];
+    for (const r of racers) {
+      if (r.kind === 'cop') continue;
+      if (points.some((p) => Math.abs(p.s - r.s) < TRAFFIC.spawnAhead * 0.5)) continue;
+      points.push({ s: r.s, speed: r.speed });
+    }
+    return points;
+  }
+
+  /** Whichever rider currently has the least traffic around them. */
+  private neediest(
+    points: Array<{ s: number; speed: number }>,
+  ): { s: number; speed: number } {
+    let worst = points[0];
+    let fewest = Infinity;
+    for (const p of points) {
+      let near = 0;
+      for (const car of this.cars) {
+        if (car.active && Math.abs(car.s - p.s) < TRAFFIC.spawnAhead) near++;
+      }
+      if (near < fewest) {
+        fewest = near;
+        worst = p;
+      }
+    }
+    return worst;
+  }
+
+  /**
+   * The stretches of road nobody may have a car appear in, merged.
+   *
+   * One span per rider - a long one in front of them, a short one behind -
+   * combined so overlapping riders do not have to be considered separately.
+   */
+  private blockedSpans(riders: readonly Racer[]): Array<[number, number]> {
+    const spans = riders
+      .map((r): [number, number] =>
+        [r.s - TRAFFIC.spawnClearBehind, r.s + TRAFFIC.spawnClearAhead])
+      .sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const span of spans) {
+      const last = merged[merged.length - 1];
+      if (last && span[0] <= last[1]) last[1] = Math.max(last[1], span[1]);
+      else merged.push([span[0], span[1]]);
+    }
+    return merged;
+  }
+
+  /**
+   * Somewhere in `[from, to]` that is not inside any of `blocked`.
+   *
+   * Worked out rather than guessed at. Sampling the window and hoping was
+   * fine for one rider, but eight of them strung along the road block more of
+   * it than they leave, and the gaps that remain are too narrow to stumble
+   * into - so the free stretches are subtracted out and one is chosen. Null
+   * when the whole window is spoken for, which the caller widens and retries.
+   */
+  private freeSlot(
+    from: number,
+    to: number,
+    blocked: readonly (readonly [number, number])[],
+    rng: Rng,
+  ): number | null {
+    const gaps: Array<[number, number]> = [];
+    let cursor = from;
+    for (const [lo, hi] of blocked) {
+      if (hi <= cursor) continue;
+      if (lo >= to) break;
+      if (lo > cursor) gaps.push([cursor, Math.min(lo, to)]);
+      cursor = Math.max(cursor, hi);
+      if (cursor >= to) break;
+    }
+    if (cursor < to) gaps.push([cursor, to]);
+
+    // A gap too small to hold a car with room either side is not a gap.
+    const usable = gaps.filter(([lo, hi]) => hi - lo > 12);
+    if (!usable.length) return null;
+    // The widest, so the car has the most room around it.
+    const best = usable.reduce((a, b) => (b[1] - b[0] > a[1] - a[0] ? b : a));
+    return rng.range(best[0] + 4, best[1] - 4);
+  }
+
+  respawn(
+    car: Car,
+    playerS: number,
+    initial = false,
+    playerSpeed = Infinity,
+    /** Everybody on the road, so nothing is dropped in front of any of them. */
+    riders: readonly Racer[] = [],
+  ): Car {
     const rng = this.rng;
     // Slightly more oncoming traffic than same-direction: it is the real hazard.
     const dir: 1 | -1 = rng.chance(0.55) ? -1 : 1;
     const laneIndex = this.laneFor(dir);
     const type = pickCarType(rng);
 
-    let s: number;
-    if (initial) {
-      s = playerS + rng.range(60, TRAFFIC.spawnAhead);
-    } else if (dir === 1 && rng.chance(0.25)) {
-      s = playerS - rng.range(60, TRAFFIC.spawnBehind); // overtaken from behind
-    } else {
-      s = playerS + rng.range(TRAFFIC.spawnAhead * TRAFFIC.spawnAheadNear, TRAFFIC.spawnAhead);
-    }
+    // Speed first, because whether this car may be put behind the rider
+    // depends on whether the rider is actually going to pull away from it.
+    const range = dir === 1 ? TRAFFIC.sameDirSpeed : TRAFFIC.oncomingSpeed;
+    const heavy = type.key === 'truck' || type.key === 'bus';
+    const speed = rng.range(range[0], range[1]) * (heavy ? 0.78 : 1);
 
-    // Keep a gap so cars never spawn stacked inside each other.
-    for (const other of this.cars) {
-      if (other === car || !other.active) continue;
-      if (other.laneIndex === laneIndex && Math.abs(other.s - s) < TRAFFIC.minGap) {
-        s += TRAFFIC.minGap * (s > other.s ? 1 : -1);
+    /*
+     * A car put behind you is one you are about to overtake - never one that
+     * is about to overtake you.
+     *
+     * It used to be placed there on a quarter of recycles regardless, sixty
+     * metres back. Ride slowly - just remounted after a crash, or picking your
+     * way through traffic - and a car appeared behind at nearly thirty metres a
+     * second and drove into the back of you, with nothing on screen to have
+     * warned you it was coming.
+     */
+    const overtaking = playerSpeed > speed + TRAFFIC.overtakeMargin;
+
+    // Where this car would like to go, as a function we can ask more than once.
+    const propose = (): number => {
+      if (initial) return playerS + rng.range(60, TRAFFIC.spawnAhead);
+      if (dir === 1 && overtaking && rng.chance(0.25)) {
+        return playerS - rng.range(60, TRAFFIC.spawnBehind); // overtaken from behind
+      }
+      return playerS + rng.range(TRAFFIC.spawnAhead * TRAFFIC.spawnAheadNear, TRAFFIC.spawnAhead);
+    };
+
+    /*
+     * Keep asking until the spot is out of sight of everyone, then settle.
+     *
+     * With a field strung out along the road there is not always a clear slot,
+     * so this does not loop for ever hoping: it takes a bounded number of
+     * tries and, failing all of them, keeps whichever was furthest from the
+     * nearest rider. A car appearing half a kilometre from somebody is a
+     * compromise; one appearing in front of them is a collision they could not
+     * have avoided.
+     */
+    let s = propose();
+    if (riders.length) {
+      /*
+       * Riders and cars in one set of blocked ground.
+       *
+       * These used to be applied one after the other: the slot was chosen
+       * clear of every rider, and then a separate pass shoved the car up to
+       * seventy metres to keep it off another car in its lane - straight back
+       * into the view it had just been kept out of. Two constraints applied in
+       * sequence are not the same as two constraints.
+       */
+      const blocked = this.blockedSpans(riders);
+      for (const other of this.cars) {
+        if (other === car || !other.active || other.laneIndex !== laneIndex) continue;
+        blocked.push([other.s - TRAFFIC.minGap, other.s + TRAFFIC.minGap]);
+      }
+      blocked.sort((a, b) => a[0] - b[0]);
+      const inBlocked = blocked.some(([lo, hi]) => s > lo && s < hi);
+      if (inBlocked) {
+        const A = TRAFFIC.spawnAhead;
+        // The window this car wanted, then progressively further up the road.
+        // Nothing is ever placed closer in to make room - that is the one
+        // direction that would put it in somebody's view.
+        const windows: Array<[number, number]> = [
+          [playerS + A * TRAFFIC.spawnAheadNear, playerS + A],
+          [playerS + A, playerS + A * 1.6],
+          [playerS + A * 1.6, playerS + A * 2.4],
+        ];
+        let found: number | null = null;
+        for (const [from, to] of windows) {
+          found = this.freeSlot(from, to, blocked, rng);
+          if (found !== null) break;
+        }
+        // Every window spoken for - which takes a field covering kilometres.
+        // Park it beyond the furthest rider rather than among them.
+        s = found ?? Math.max(...riders.map((r) => r.s)) + TRAFFIC.spawnClearAhead + 20;
       }
     }
 
-    const range = dir === 1 ? TRAFFIC.sameDirSpeed : TRAFFIC.oncomingSpeed;
-    const heavy = type.key === 'truck' || type.key === 'bus';
+    // Keep a gap so cars never spawn stacked inside each other. Only needed
+    // when there is no field to place around - with riders, the search above
+    // has already taken the other cars into account, and nudging here would
+    // undo it.
+    if (!riders.length) {
+      for (const other of this.cars) {
+        if (other === car || !other.active) continue;
+        if (other.laneIndex === laneIndex && Math.abs(other.s - s) < TRAFFIC.minGap) {
+          s += TRAFFIC.minGap * (s > other.s ? 1 : -1);
+        }
+      }
+    }
+
     car.s = s;
     car.dir = dir;
     car.laneIndex = laneIndex;
     car.lateral = this.track.laneAt(TRACK.laneCentres[laneIndex], s) + rng.range(-0.55, 0.55);
-    car.speed = rng.range(range[0], range[1]) * (heavy ? 0.78 : 1);
+    car.speed = speed;
     car.cruise = car.speed;
     car.brake = 0;
     car.type = type;
@@ -116,12 +287,26 @@ export class TrafficSystem {
     return car;
   }
 
-  step(dt: number, playerS: number, elapsed: number, racers: readonly Racer[] = []): void {
+  step(
+    dt: number,
+    playerS: number,
+    elapsed: number,
+    racers: readonly Racer[] = [],
+    /** How fast the rider is going, so nothing is recycled in behind them. */
+    playerSpeed = Infinity,
+  ): void {
     const ahead = TRAFFIC.spawnAhead + 90;
     const behind = TRAFFIC.spawnBehind + 90;
+    // Where traffic is wanted. The pool used to be recycled entirely around one
+    // rider, so in a race anybody more than a few hundred metres from them rode
+    // an empty road - which is both a different game and, online, an advantage.
+    const interest = this.interestPoints(racers, playerS, playerSpeed);
+    this.lastRiders = racers;
+
     for (const car of this.cars) {
       if (!car.active) {
-        this.respawn(car, playerS);
+        const want = this.neediest(interest);
+        this.respawn(car, want.s, false, want.speed);
         continue;
       }
 
@@ -164,12 +349,56 @@ export class TrafficSystem {
       const lane = this.track.laneAt(TRACK.laneCentres[car.laneIndex], car.s);
       car.lateral = lane + Math.sin(elapsed * 0.6 + car.swervePhase) * car.swerve;
 
-      if (car.s > playerS + ahead || car.s < playerS - behind) {
-        this.respawn(car, playerS);
+      // Out of everybody's window, not just out of one rider's.
+      const stranded = interest.every(
+        (i) => car.s > i.s + ahead || car.s < i.s - behind,
+      );
+      if (stranded) {
+        const want = this.neediest(interest);
+        this.respawn(car, want.s, false, want.speed, racers);
       }
     }
 
+    this.rebalance(interest);
     this.separate();
+  }
+
+  /**
+   * Move traffic towards whoever has none.
+   *
+   * Recycling alone cannot do this. A car only recycles when it falls out of
+   * somebody's window, so a pool sitting comfortably around the pack never
+   * becomes free to serve a rider who has broken away - they simply ride an
+   * empty road for the rest of the race. One car a frame is moved across,
+   * which converges in a fraction of a second and costs nothing.
+   */
+  /** The field as of the last step, for the rebalancer's own respawns. */
+  private lastRiders: readonly Racer[] = [];
+
+  private rebalance(points: Array<{ s: number; speed: number }>): void {
+    if (points.length < 2) return;
+    const counts = points.map((p) =>
+      this.cars.filter((c) => c.active && Math.abs(c.s - p.s) < TRAFFIC.spawnAhead).length);
+    const min = Math.min(...counts);
+    const max = Math.max(...counts);
+    // A difference of one is just where the cars happen to be this instant.
+    if (max - min < 2) return;
+
+    const needy = points[counts.indexOf(min)];
+    const rich = points[counts.indexOf(max)];
+    // Take the least useful car the well-served rider has: the one furthest
+    // behind them, which they have already gone past.
+    let pick: Car | null = null;
+    let furthestBehind = -Infinity;
+    for (const car of this.cars) {
+      if (!car.active || Math.abs(car.s - rich.s) >= TRAFFIC.spawnAhead) continue;
+      const behind = rich.s - car.s;
+      if (behind > furthestBehind) {
+        furthestBehind = behind;
+        pick = car;
+      }
+    }
+    if (pick) this.respawn(pick, needy.s, false, needy.speed, this.lastRiders);
   }
 
   /**

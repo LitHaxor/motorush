@@ -15,6 +15,10 @@ import { makeRng, clamp } from './mathx';
 import type { TrackSample } from './types';
 import { blendAt, type BiomeSegment, type DividedSection } from './biomes';
 
+/** Which biome covers this point, or open country if none says otherwise. */
+const biomeKindAt = (biomes: readonly BiomeSegment[], s: number): string =>
+  biomes.find((b) => s >= b.from && s < b.to)?.kind ?? 'country';
+
 const TWO_PI = Math.PI * 2;
 
 interface WaveTerm {
@@ -298,6 +302,28 @@ export class Track {
    * trees at off-road speed and you can get to the other carriageway. Paying
    * for it in lost time is a better rule than an invisible barrier.
    */
+  /**
+   * Is this spot built on, rather than merely off the road?
+   *
+   * Only in town. A city island is a block of buildings from kerb to kerb -
+   * there is no way through it, and nothing useful the simulation could do
+   * with the gaps, so the whole strip is solid.
+   *
+   * Out of town an island is grass with trees on it, and those trees are
+   * obstacles in their own right. Treating the strip itself as solid there was
+   * wrong: it put an invisible wall across open grass, so a rider cutting a
+   * corner went down with nothing in sight to have hit. On a country split you
+   * may ride the island; you simply have to miss the trunks.
+   */
+  isBlocked(lateral: number, s = 0): boolean {
+    const median = this.medianAt(s);
+    if (median < TRACK.forkImpassableFrom) return false;
+    if (biomeKindAt(this.biomes, s) !== 'city') return false;
+    // The same forgiveness the grass gets: clipping the kerb is not a crash,
+    // being in the island is.
+    return Math.abs(lateral) < median - TRACK.medianForgiveness;
+  }
+
   isOutOfBounds(lateral: number, s = 0): boolean {
     return Math.abs(lateral) > this.edgeAt(s) + this.shoulder;
   }
