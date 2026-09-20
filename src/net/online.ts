@@ -92,8 +92,11 @@ export interface BroadcastSource {
   cops: readonly Racer[];
   cars: readonly Car[];
   peds: readonly Pedestrian[];
-  /** Where to centre the pedestrian cull - the host's own rider. */
-  aroundS: number;
+  /**
+   * Where to centre the pedestrian cull: one position per seat a human is
+   * riding, so every one of them is sent the crowd in front of them.
+   */
+  aroundS: readonly number[];
   time: number;
   race: StateMessage['race'];
   countdown: number;

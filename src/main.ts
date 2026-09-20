@@ -445,6 +445,22 @@ class Game {
     );
   };
 
+  /**
+   * The riders the crowd has to be sent for: this browser's own, and every
+   * seat somebody is actually holding.
+   *
+   * Deliberately not all eight. Bots are simulated here and drawn from the
+   * frames everyone already receives, so sending the pedestrians around them
+   * would multiply the biggest part of a snapshot to no one's benefit. Human
+   * seats are the ones that can be surprised by somebody stepping off a kerb.
+   */
+  private crowdCentres(nowMs: number): number[] {
+    const online = this.online;
+    const seats = new Set<number>([this.world.localRacer.id]);
+    if (online) for (const id of online.inputs(nowMs).keys()) seats.add(id);
+    return this.world.racers.filter((r) => seats.has(r.id)).map((r) => r.s);
+  }
+
   private stepSimulation(dt: number, input: RacerInput, nowMs: number): void {
     if (this.online && !this.online.isHost) {
       this.stepAsGuest(dt, input, nowMs);
@@ -472,7 +488,7 @@ class Game {
       cops: this.world.cop ? [this.world.cop] : [],
       cars: this.world.traffic.cars,
       peds: this.world.pedestrians,
-      aroundS: this.world.player.s,
+      aroundS: this.crowdCentres(nowMs),
       time: this.world.elapsed,
       race: this.world.state,
       countdown: this.world.countdown,

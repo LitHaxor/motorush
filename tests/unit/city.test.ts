@@ -46,7 +46,12 @@ describe('where the city crowd actually stands', () => {
     expect(walkers.length).toBeGreaterThan(0);
 
     for (const p of walkers) {
-      const out = Math.abs(p.lateral) - TRACK.halfWidth;
+      // Measured from this stretch's own kerb, not from a constant. Where the
+      // road divides, the tarmac runs out to twice the half-width - so a
+      // walker standing correctly on the pavement of a divided street reads as
+      // fifteen metres out if you reckon from `halfWidth`, and the test that
+      // did so was asserting the very bug it should have caught.
+      const out = Math.abs(p.lateral) - w.track.edgeAt(p.s);
       // Past the barrier, so never in the carriageway...
       expect(out, `walker at ${p.lateral.toFixed(1)}`).toBeGreaterThan(BARRIER);
       // ...and short of the building line, so never inside a wall.
