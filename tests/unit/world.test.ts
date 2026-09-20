@@ -1004,3 +1004,200 @@ describe('World: a guest does not decide its own ending', () => {
     expect(w.state).toBe('finished');
   });
 });
+
+describe('World: being out of the race is not being out of the room', () => {
+  it('keeps the field running after you are wasted, when others are racing', () => {
+    const w = new World({ seed: 41 });
+    // A guest: somebody else decides how this race ends, which means there is
+    // somebody else in it.
+    w.authority = false;
+    startRace(w);
+    race(w, 2, INPUT({ throttle: 1 }));
+    w.concludeLocal('busted');
+    expect(w.state).toBe('busted');
+
+    const behind = w.rivals.map((r) => r.s);
+    for (let i = 0; i < 60 * 2; i++) w.step(DT, INPUT());
+    // They ride on, and the board that shows them keeps moving.
+    expect(w.rivals.every((r, i) => r.s > behind[i])).toBe(true);
+    expect(w.fieldStillRacing).toBe(true);
+  });
+
+  it('still reports a live standings board once you are out', () => {
+    const w = new World({ seed: 42 });
+    w.authority = false;
+    startRace(w);
+    race(w, 2, INPUT({ throttle: 1 }));
+    w.concludeLocal('busted');
+
+    const first = w.standingEntries().map((e) => e.s);
+    for (let i = 0; i < 60; i++) w.step(DT, INPUT());
+    const later = w.standingEntries().map((e) => e.s);
+    // Somebody moved, so the board has something new to say.
+    expect(later.some((s, i) => s !== first[i])).toBe(true);
+    expect(w.standingEntries()).toHaveLength(8);
+  });
+});
+
+describe('World: the law is interested in everybody', () => {
+  /** A rider on another browser: present in the input map, so a person. */
+  const remote = (w: World) => new Map([[w.rivals[0].id, INPUT({ throttle: 1 })]]);
+
+  it('chases a rider on another browser, not just the one holding the screen', () => {
+    // As a guest you were immune: heat, the patrol and the arrest were all
+    // about `localRacer`, which on the host is the host. You could ride at
+    // 250 all race and never be looked at.
+    const w = new World({ seed: 12 });
+    startRace(w, INPUT({ throttle: 1 }));
+    const them = w.rivals[0];
+    // Heat is seeded rather than earned: at the tuned rate it takes a couple
+    // of minutes of racing to boil over, which is a long time to simulate to
+    // prove who the patrol comes for.
+    w.addHeat(POLICE.heatMax, them);
+    them.speed = POLICE.speedThreshold + 18;
+    w.localRacer.speed = 5;
+    w.step(DT, INPUT({ throttle: 0 }), remote(w));
+    expect(w.cop).toBeTruthy();
+    expect(w.chased.id).toBe(them.id);
+    // And our own meter stays cold, because it is not our problem.
+    expect(w.bustProgress).toBe(0);
+  });
+
+  it('busts them without ending our race', () => {
+    const w = new World({ seed: 12 });
+    startRace(w, INPUT({ throttle: 1 }));
+    const them = w.rivals[0];
+    w.addHeat(POLICE.heatMax, them);
+    them.speed = POLICE.speedThreshold + 18;
+    w.step(DT, INPUT({ throttle: 0 }), remote(w));
+    expect(w.cop).toBeTruthy();
+
+    // Put them on the floor with the patrol alongside, and wait them out.
+    knockDown(them, 1);
+    w.cop!.s = them.s;
+    for (let i = 0; i < 60 * 20 && them.state !== 'busted'; i++) {
+      w.step(DT, INPUT({ throttle: 0 }), remote(w));
+    }
+    expect(them.state).toBe('busted');
+    // Their arrest, not ours: this browser is still racing.
+    expect(w.state).toBe('racing');
+    expect(w.isOver).toBe(false);
+  });
+
+  it('still arrests the rider holding the screen', () => {
+    const w = new World({ seed: 13 });
+    startRace(w, INPUT({ throttle: 1 }));
+    w.heat = POLICE.heatMax;
+    w.localRacer.speed = POLICE.speedThreshold + 18;
+    w.step(DT, INPUT({ throttle: 1 }));
+    expect(w.cop).toBeTruthy();
+    expect(w.chased.id).toBe(w.localRacer.id);
+
+    knockDown(w.localRacer, 1);
+    w.cop!.s = w.localRacer.s;
+    for (let i = 0; i < 60 * 20 && !w.isOver; i++) w.step(DT, INPUT({ throttle: 0 }));
+    expect(w.state).toBe('busted');
+  });
+});
+
+describe('World: a guest draws the other bikes rather than riding them', () => {
+  it('leaves everybody but you exactly where the wire put them', () => {
+    // The double-image bug: the local AI moved every bot and the host's next
+    // frame snapped it back, so a late frame showed the guess and the same
+    // bike appeared in two places.
+    const w = new World({ seed: 51 });
+    startRace(w);
+    w.fieldFrozen = true;
+    const before = w.rivals.map((r) => ({ s: r.s, lateral: r.lateral, speed: r.speed }));
+
+    for (let i = 0; i < 60; i++) w.step(DT, INPUT({ throttle: 1 }));
+
+    w.rivals.forEach((r, i) => {
+      expect(r.s).toBe(before[i].s);
+      expect(r.lateral).toBe(before[i].lateral);
+      expect(r.speed).toBe(before[i].speed);
+    });
+  });
+
+  it('still rides your own bike while the rest are frozen', () => {
+    const w = new World({ seed: 51 });
+    startRace(w);
+    w.fieldFrozen = true;
+    const from = w.localRacer.s;
+    for (let i = 0; i < 60; i++) w.step(DT, INPUT({ throttle: 1 }));
+    // Prediction is the whole reason a guest simulates anything at all.
+    expect(w.localRacer.s).toBeGreaterThan(from + 5);
+  });
+
+  it('hands the bikes back to the AI when the host goes quiet', () => {
+    const w = new World({ seed: 51 });
+    startRace(w);
+    w.fieldFrozen = true;
+    for (let i = 0; i < 30; i++) w.step(DT, INPUT({ throttle: 1 }));
+    const parked = w.rivals.map((r) => r.s);
+
+    w.fieldFrozen = false;
+    for (let i = 0; i < 60; i++) w.step(DT, INPUT({ throttle: 1 }));
+    // A road full of stationary bikes is worse than a road full of guesses.
+    expect(w.rivals.every((r, i) => r.s > parked[i])).toBe(true);
+  });
+});
+
+describe('World: a rider owns their own bike', () => {
+  const claimAt = (s: number, lateral: number, speed = 60) => ({
+    s, lateral, speed, lean: 0, state: 'ride' as const, riderPhase: 'tumble' as const,
+  });
+
+  it('believes a rider about where they are', () => {
+    const w = new World({ seed: 61 });
+    startRace(w);
+    const them = w.rivals[0];
+    const to = them.s + 1;
+    expect(w.acceptClaim(them.id, claimAt(to, 3), DT)).toBe(true);
+    expect(them.s).toBe(to);
+    expect(them.lateral).toBe(3);
+  });
+
+  it('refuses a claim no motorcycle could reach', () => {
+    // The anti-cheat, and the recovery path: a rider whose claims stop making
+    // sense simply goes back to being simulated here.
+    const w = new World({ seed: 61 });
+    startRace(w);
+    const them = w.rivals[0];
+    const was = them.s;
+    expect(w.acceptClaim(them.id, claimAt(was + 900, 0), DT)).toBe(false);
+    expect(them.s).toBe(was);
+  });
+
+  it('refuses a claim to be off the road, or to be doing the impossible', () => {
+    const w = new World({ seed: 61 });
+    startRace(w);
+    const them = w.rivals[0];
+    expect(w.acceptClaim(them.id, claimAt(them.s + 1, 400), DT)).toBe(false);
+    expect(w.acceptClaim(them.id, claimAt(them.s + 1, 0, 500), DT)).toBe(false);
+    expect(w.acceptClaim(them.id, claimAt(Number.NaN, 0), DT)).toBe(false);
+  });
+
+  it('does not simulate a bike it has just been told about', () => {
+    const w = new World({ seed: 61 });
+    startRace(w);
+    const them = w.rivals[0];
+    const claims = new Map([[them.id, claimAt(them.s + 0.5, 2, 0)]]);
+    const remote = new Map([[them.id, INPUT({ throttle: 1 })]]);
+    const placed = them.s + 0.5;
+    w.step(DT, INPUT(), remote, claims);
+    // Held exactly where they said, not where full throttle would have put it.
+    expect(them.s).toBe(placed);
+    expect(them.speed).toBe(0);
+  });
+
+  it('leaves our own bike to us', () => {
+    const w = new World({ seed: 61 });
+    startRace(w);
+    const claims = new Map([[w.localRacer.id, claimAt(w.localRacer.s + 300, 0)]]);
+    const before = w.localRacer.s;
+    w.step(DT, INPUT({ throttle: 1 }), undefined, claims);
+    // A claim about the rider on this screen is not somebody else's to make.
+    expect(w.localRacer.s).toBeLessThan(before + 10);
+  });
+});

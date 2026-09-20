@@ -14,7 +14,9 @@ import { type NetSession, connect, readConfig } from './net/session';
 import { type JoinMode, type OnlineRace, goOnline } from './net/online';
 import { GRID_SLOTS } from './net/lobby';
 import { RIVALS } from './sim/config';
-import { applyCars, applyPeds, applyRacers, reconcileLocalRacer } from './net/snapshot';
+import {
+  applyCars, applyPeds, applyPickups, applyRacers, reconcileLocalRacer,
+} from './net/snapshot';
 import type { RacerSnapshot } from './net/protocol';
 import type { DifficultyKey, Racer, RacerInput, SimEvent } from './sim/types';
 
@@ -788,12 +790,17 @@ class Game {
 
   /** Keep the results board in step with a race that is still being run. */
   private refreshResults(): void {
-    if (this.screens.active !== 'finish') return;
+    const screen = this.screens.active;
+    // Every ending, not only the good one. Being arrested or beaten unconscious
+    // takes you out of the race; it should not also take away the race - the
+    // riders you were with are still out there, and watching them finish is
+    // most of what there is to do while waiting for the room.
+    if (screen !== 'finish' && screen !== 'busted' && screen !== 'wasted') return;
     this.screens.showResults({
       standings: this.world.standingEntries(),
       raceDistance: this.world.raceDistance,
       complete: this.world.raceComplete,
-    });
+    }, screen);
   }
 
   /**
@@ -826,14 +833,15 @@ class Game {
       this.world.requestAttackFor(swing.id, swing.dir);
     }
 
-    // Offline this is empty, so the AI rides every bike exactly as before.
+    // Offline these are empty, so the AI rides every bike exactly as before.
     const remote = this.online?.inputs(nowMs);
+    const claims = this.online?.claims(nowMs);
 
     this.accumulator += dt;
     let steps = 0;
     const events: SimEvent[] = [];
     while (this.accumulator >= FIXED_DT && steps < MAX_SUBSTEPS) {
-      events.push(...this.world.step(FIXED_DT, input, remote));
+      events.push(...this.world.step(FIXED_DT, input, remote, claims));
       this.accumulator -= FIXED_DT;
       steps++;
     }
@@ -845,6 +853,7 @@ class Game {
       cops: this.world.cop ? [this.world.cop] : [],
       cars: this.world.traffic.cars,
       peds: this.world.pedestrians,
+      pickups: this.world.pickups,
       aroundS: this.crowdCentres(nowMs),
       time: this.world.elapsed,
       // How the RACE is going, not how the host's race is going. Sending the
@@ -897,11 +906,22 @@ class Game {
     // somebody is holding this bike - when what should happen is the AI taking
     // it back the moment we stop asking for it.
     if (this.mode === 'racing') {
+      const me = this.world.localRacer;
       const sent = online.sendInput({
         ...input,
         attackLeft: this.pendingSwings.includes(-1),
         attackRight: this.pendingSwings.includes(1),
-      }, nowMs);
+      }, nowMs, {
+        // Our own bike, as we are riding it. The host believes this unless it
+        // is unreachable, which is what stops our own machine and theirs
+        // holding two versions of the same motorcycle.
+        s: me.s,
+        lateral: me.lateral,
+        speed: me.speed,
+        lean: me.lean,
+        state: me.state,
+        riderPhase: me.riderPhase,
+      });
       if (sent) this.pendingSwings.length = 0;
     }
 
@@ -910,6 +930,9 @@ class Game {
     const silentMs = online.snapshotAgeMs(nowMs);
     const live = silentMs < GUEST_HOLD_MS;
     this.setLocalControl(!live);
+    // While frames are arriving, the other bikes are drawn rather than ridden.
+    // The moment they stop, the AI picks them up again - see `fieldFrozen`.
+    this.world.fieldFrozen = live;
 
     // A decision is on screen. Hold the world exactly where it is rather than
     // riding on unsteered behind the panel - the controls are underneath it -
@@ -949,11 +972,14 @@ class Game {
     // predicted and corrected, so a press moves the bike now rather than in
     // a round trip's time.
     applyRacers(this.world.racers, frame.racers, this.world.localRacer.id);
-    if (mine) reconcileLocalRacer(this.world.localRacer, mine, dt);
+    // Ours to ride: the host is echoing back what we sent it, so its copy
+    // only steps in when the two have genuinely come apart.
+    if (mine) reconcileLocalRacer(this.world.localRacer, mine, dt, { owned: true });
     // Police are the host's business entirely; a guest just draws whichever
     // patrols it is told about.
     applyRacers(this.world.adoptCops(frame.cops.map((c) => c.id)), frame.cops);
     applyCars(this.world.traffic.cars, frame.cars);
+    applyPickups(this.world.pickups, frame.taken);
     applyPeds(this.world.pedestrians, frame.peds);
 
     // The host owns the race clock too. Without this a guest that joined
@@ -1126,7 +1152,9 @@ class Game {
   private dispatch(events: SimEvent[]): void {
     this.view?.handleEvents(events);
     this.hud.handleEvents(events, this.world);
-    this.audio.handleEvents(events, this.world.player.id);
+    // The rider holding this screen, not racer zero. Online they are different
+    // people, so a guest heard its own crashes as somebody else's.
+    this.audio.handleEvents(events, this.world.localRacer.id);
 
     for (const e of events) {
       if (e.type === 'raceEnd') {

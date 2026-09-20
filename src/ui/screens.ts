@@ -434,6 +434,12 @@ export class Screens {
         ...shared.map(([l, v]) => statTile(l, v)),
         statTile('DISTANCE', formatKm(result.distance)),
       );
+      // The race carries on without you, and you can watch it.
+      this.showResults({
+        standings: result.standings,
+        raceDistance: result.raceDistance,
+        complete: result.standings.every((e) => e.time != null),
+      }, 'busted');
       this.show('busted');
       return;
     }
@@ -443,6 +449,12 @@ export class Screens {
         ...shared.map(([l, v]) => statTile(l, v)),
         statTile('DISTANCE', formatKm(result.distance)),
       );
+      // The race carries on without you, and you can watch it.
+      this.showResults({
+        standings: result.standings,
+        raceDistance: result.raceDistance,
+        complete: result.standings.every((e) => e.time != null),
+      }, 'wasted');
       this.show('wasted');
       return;
     }
@@ -481,7 +493,7 @@ export class Screens {
    * unless something actually moved - the board is eight rows and most frames
    * change none of them.
    */
-  showResults(view: ResultsView): void {
+  showResults(view: ResultsView, screen: 'busted' | 'wasted' | 'finish' = 'finish'): void {
     const rows = view.standings.map((entry) => [
       String(entry.place),
       entry.name,
@@ -495,11 +507,11 @@ export class Screens {
       entry.isPlayer ? 'you' : '',
     ] as const);
 
-    const signature = rows.map((r) => r.join('\u0000')).join('\u0001');
+    const signature = `${screen}|${rows.map((r) => r.join('\u0000')).join('\u0001')}`;
     if (signature === this.resultsSignature) return;
     this.resultsSignature = signature;
 
-    $('finish-results').replaceChildren(
+    $(`${screen}-results`).replaceChildren(
       ...rows.map(([place, name, time, you]) => {
         const li = document.createElement('li');
         if (you) li.className = 'is-player';
@@ -517,7 +529,7 @@ export class Screens {
     );
 
     setText(
-      $('finish-note'),
+      $(`${screen}-note`),
       view.complete ? 'EVERY RIDER IS IN' : 'THE RACE IS STILL ON — THIS BOARD IS LIVE',
     );
   }

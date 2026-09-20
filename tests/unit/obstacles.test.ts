@@ -177,3 +177,39 @@ describe('nothing you cannot see and cannot reach', () => {
     }
   });
 });
+
+describe('the obstacle list is ordered', () => {
+  it('comes out sorted along the road', () => {
+    // The collision check bisects this list. An unsorted one does not throw -
+    // it just quietly stops finding trees, which is far worse.
+    const w = new World({ seed: 13 });
+    for (let i = 1; i < w.obstacles.length; i++) {
+      expect(w.obstacles[i].s).toBeGreaterThanOrEqual(w.obstacles[i - 1].s);
+    }
+  });
+
+  it('still finds a tree after sorting, wherever it is in the list', () => {
+    const w = new World({ seed: 13 });
+    // One from the middle of the course, well away from the start.
+    const target = w.obstacles.filter((o) => o.s > 3000 && o.s < 4000)[0];
+    expect(target).toBeTruthy();
+    const r = w.player;
+    r.state = 'ride';
+    r.speed = 50;
+    r.s = target.s;
+    r.lateral = target.lateral;
+    expect(collideObstacles([r], w.obstacles, target.s)).toHaveLength(1);
+  });
+
+  it('ignores everything outside the window, cheaply', () => {
+    const w = new World({ seed: 13 });
+    const target = w.obstacles.filter((o) => o.s > 3000)[0];
+    const r = w.player;
+    r.state = 'ride';
+    r.speed = 50;
+    r.s = target.s;
+    r.lateral = target.lateral;
+    // Same rider, same tree, but the window is centred far away.
+    expect(collideObstacles([r], w.obstacles, target.s + 5000)).toHaveLength(0);
+  });
+});

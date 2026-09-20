@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { World } from '../../src/sim/world';
 import {
-  SnapshotBuffer, applyCars, applyRacers, captureCars, capturePeds, captureRacers,
-  lerpCars, lerpRacers, reconcileLocalRacer,
+  SnapshotBuffer, applyCars, applyPickups, applyRacers, captureCars, capturePeds,
+  capturePickups, captureRacers, lerpCars, lerpRacers, reconcileLocalRacer,
 } from '../../src/net/snapshot';
+import { decode } from '../../src/net/protocol';
 import type { CarSnapshot, RacerSnapshot, StateMessage } from '../../src/net/protocol';
 
 const car = (id: number, over: Partial<CarSnapshot> = {}): CarSnapshot => ({
   id, s: 0, lateral: 0, speed: 20, dir: 1, brake: 0, swerve: 0.2,
-  color: 0xffffff, type: 'sedan', ...over,
+  color: 0xffffff, type: 'sedan', active: true, ...over,
 });
 
 const racer = (id: number, over: Partial<RacerSnapshot> = {}): RacerSnapshot => ({
@@ -18,7 +19,7 @@ const racer = (id: number, over: Partial<RacerSnapshot> = {}): RacerSnapshot => 
 });
 
 const frame = (seq: number, time: number, racers: RacerSnapshot[], cars: CarSnapshot[] = []): StateMessage =>
-  ({ t: 'state', seq, time, phase: 'racing', countdown: 0, racers, cars, peds: [], cops: [] });
+  ({ t: 'state', seq, time, phase: 'racing', countdown: 0, racers, cars, peds: [], cops: [], taken: [] });
 
 describe('capturing the grid', () => {
   it('photographs every rider', () => {
@@ -485,5 +486,123 @@ describe('the crowd is sent to everybody who is riding', () => {
 
   it('sends nothing when there is nobody to send it to', () => {
     expect(capturePeds(crowd([100]), [])).toEqual([]);
+  });
+});
+
+describe('the host decides which cars exist', () => {
+  it('takes a car off the road when the host says it is gone', () => {
+    // The disappearing-car bug ran the other way: the guest's own pool
+    // recycled a car the host still had, and the renderer - which skips
+    // inactive cars - stopped drawing one that was really there.
+    const w = new World({ seed: 4 });
+    const target = w.traffic.cars[0];
+    target.active = true;
+    applyCars(w.traffic.cars, [car(target.id, { active: false })]);
+    expect(target.active).toBe(false);
+  });
+
+  it('puts one back when the host says it is there', () => {
+    const w = new World({ seed: 4 });
+    const target = w.traffic.cars[0];
+    target.active = false;
+    applyCars(w.traffic.cars, [car(target.id, { active: true, s: 42 })]);
+    expect(target.active).toBe(true);
+    expect(target.s).toBe(42);
+  });
+
+  it('assumes a car is there when an older frame does not say', () => {
+    const raw = { id: 1, s: 0, lateral: 0, speed: 20, dir: 1, brake: 0, swerve: 0, color: 0, type: 'sedan' };
+    const back = decode(JSON.stringify({
+      t: 'state', seq: 1, time: 0, phase: 'racing', countdown: 0,
+      racers: [], cops: [], peds: [], cars: [raw],
+    })) as StateMessage;
+    expect(back.cars[0].active).toBe(true);
+  });
+});
+
+describe('what is left lying in the road', () => {
+  it('tells a guest which pickups are gone', () => {
+    // Never on the wire at all before this, so every browser kept its own idea
+    // of what was still there: two riders could take the same health box, and
+    // one the host had consumed went on glowing on everybody else's screen.
+    const w = new World({ seed: 6 });
+    const [a, b] = w.pickups;
+    expect(a.taken).toBe(false);
+    applyPickups(w.pickups, [a.id]);
+    expect(a.taken).toBe(true);
+    expect(b.taken).toBe(false);
+  });
+
+  it('photographs only the ones that are gone', () => {
+    const w = new World({ seed: 6 });
+    expect(capturePickups(w.pickups)).toEqual([]);
+    w.pickups[2].taken = true;
+    w.pickups[5].taken = true;
+    expect(capturePickups(w.pickups)).toEqual([w.pickups[2].id, w.pickups[5].id]);
+  });
+
+  it('never puts one back', () => {
+    // A pickup does not reappear, so an id missing from a frame means nobody
+    // has touched it yet - not that it has returned.
+    const w = new World({ seed: 6 });
+    w.pickups[0].taken = true;
+    applyPickups(w.pickups, []);
+    expect(w.pickups[0].taken).toBe(true);
+  });
+});
+
+describe('a guest on a slow link is still smooth', () => {
+  /** 100ms each way: the host's copy of us is a round trip behind. */
+  const RTT = 0.2;
+  const SPEED = 65;
+
+  it('does not drag a self-ridden bike backwards at 200ms', () => {
+    // The bug this exists for: the host's copy of our own bike is our own
+    // position as it was a round trip ago - thirteen metres back at racing
+    // speed. Judged by the tolerance that suits a predicted bike, that snapped
+    // the rider backwards every single frame, and the better the rider's
+    // connection got the less it happened. Exactly backwards.
+    const w = new World({ seed: 71 });
+    const me = w.localRacer;
+    me.state = 'ride';
+    me.speed = SPEED;
+    me.s = 1000;
+
+    let snapped = 0;
+    for (let i = 0; i < 120; i++) {
+      me.s += SPEED / 60;
+      // What the host knows about us: where we were a round trip ago.
+      const echo = racer(me.id, { s: me.s - SPEED * RTT, speed: SPEED, state: 'ride' });
+      const before = me.s;
+      reconcileLocalRacer(me, echo, 1 / 60, { owned: true });
+      if (me.s < before) snapped++;
+    }
+    expect(snapped).toBe(0);
+  });
+
+  it('still catches a real disagreement', () => {
+    // Far enough that no latency explains it: the host refused our claims and
+    // put us somewhere else entirely.
+    const w = new World({ seed: 71 });
+    const me = w.localRacer;
+    me.state = 'ride';
+    me.speed = SPEED;
+    me.s = 1000;
+    reconcileLocalRacer(me, racer(me.id, { s: 1300, speed: SPEED, state: 'ride' }), 1 / 60, {
+      owned: true,
+    });
+    expect(me.s).toBe(1300);
+  });
+
+  it('is stricter about a bike we are only predicting', () => {
+    // Somebody else's rider has no claim of ours behind it, so the host's word
+    // is the only word and it is taken quickly.
+    const w = new World({ seed: 71 });
+    const them = w.rivals[0];
+    them.state = 'ride';
+    them.speed = SPEED;
+    them.s = 1000;
+    reconcileLocalRacer(them, racer(them.id, { s: 1010, speed: SPEED, state: 'ride' }), 1 / 60);
+    expect(them.s).toBe(1010);
   });
 });

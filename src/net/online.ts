@@ -13,11 +13,15 @@ import {
   createRoom, joinByCode, joinOrHost, leave, randomSeed, resetRace, setOpen, startRace, watchRoom,
 } from './lobby';
 import { type PeerLink, openPeerLink } from './peer';
-import { INPUT_HZ, SNAPSHOT_HZ, type StateMessage, decode, encode } from './protocol';
+import {
+  INPUT_HZ, SNAPSHOT_HZ, type RiderClaim, type StateMessage, decode, encode,
+} from './protocol';
 import { LinkHealth, type LinkQuality } from './health';
-import { SnapshotBuffer, captureCars, capturePeds, captureRacers } from './snapshot';
+import {
+  SnapshotBuffer, captureCars, capturePeds, capturePickups, captureRacers,
+} from './snapshot';
 import type { Pedestrian } from '../sim/pedestrians';
-import type { Car, Racer } from '../sim/types';
+import type { Car, Pickup, Racer } from '../sim/types';
 import type { NetSession } from './session';
 
 /**
@@ -39,12 +43,24 @@ const MAX_HELD_ATTACKS = 16;
  * World.step wants for its `remoteInputs` argument.
  */
 export class RemoteInputTracker {
-  private readonly held = new Map<number, { input: RacerInput; atMs: number }>();
+  private readonly held = new Map<
+    number,
+    { input: RacerInput; claim?: RiderClaim; atMs: number }
+  >();
 
   constructor(private readonly ttlMs = INPUT_TTL_MS) {}
 
-  set(racerId: number, input: RacerInput, nowMs: number): void {
-    this.held.set(racerId, { input, atMs: nowMs });
+  set(racerId: number, input: RacerInput, nowMs: number, claim?: RiderClaim): void {
+    this.held.set(racerId, { input, claim, atMs: nowMs });
+  }
+
+  /** Where each rider says their own bike is, while it is still fresh. */
+  claims(nowMs: number): ReadonlyMap<number, RiderClaim> {
+    const out = new Map<number, RiderClaim>();
+    for (const [id, entry] of this.held) {
+      if (entry.claim && nowMs - entry.atMs <= this.ttlMs) out.set(id, entry.claim);
+    }
+    return out;
   }
 
   /** A rider left, or their link closed. The AI has the bike back next tick. */
@@ -96,6 +112,8 @@ export interface BroadcastSource {
   cops: readonly Racer[];
   cars: readonly Car[];
   peds: readonly Pedestrian[];
+  /** What is still lying in the road, and what has been taken. */
+  pickups: readonly Pickup[];
   /**
    * Where to centre the pedestrian cull: one position per seat a human is
    * riding, so every one of them is sent the crowd in front of them.
@@ -142,6 +160,8 @@ export interface OnlineRace {
   onRoom(handle: (room: RoomState | null) => void): void;
   /** Host only: what the humans are holding, for World.step. */
   inputs(nowMs: number): ReadonlyMap<number, Readonly<RacerInput>>;
+  /** Host only: where each of them says their own bike is. */
+  claims(nowMs: number): ReadonlyMap<number, RiderClaim>;
   /** Host only: push the world out. Rate-limits itself; call it every frame. */
   broadcast(snapshot: BroadcastSource, nowMs: number): void;
   /**
@@ -151,7 +171,7 @@ export interface OnlineRace {
    * event riding along with it - the caller has to know whether to keep
    * holding onto it or let it go.
    */
-  sendInput(input: RacerInput, nowMs: number): boolean;
+  sendInput(input: RacerInput, nowMs: number, claim?: RiderClaim): boolean;
   /** Guest only: the grid as it should be drawn. */
   sample(nowMs: number): StateMessage | null;
   /** Guest only: snapshots held for interpolation. Zero means nothing is arriving. */
@@ -280,7 +300,7 @@ export async function goOnline(
       if (message.t === 'input' && handle.isHost) {
         const seat = seatOfUid.get(peerUid);
         if (seat === undefined) return;
-        tracker.set(seat, message.input, at);
+        tracker.set(seat, message.input, at, message.claim);
         // A punch is an event, not a held key. Queue it once, here, where
         // each input frame is seen exactly once.
         if (message.input.attackLeft) pendingAttacks.push({ id: seat, dir: -1 });
@@ -387,6 +407,8 @@ export async function goOnline(
       return tracker.current(nowMs);
     },
 
+    claims: (nowMs) => tracker.claims(nowMs),
+
     broadcast(source, nowMs) {
       if (!handle.isHost || links.size === 0) return;
       if (!snapshotTicker.due(nowMs)) return;
@@ -399,17 +421,18 @@ export async function goOnline(
         racers: captureRacers(source.racers),
         cops: captureRacers(source.cops),
         cars: captureCars(source.cars),
+        taken: capturePickups(source.pickups),
         peds: capturePeds(source.peds, source.aroundS),
       });
       for (const link of links.values()) link.send(frame);
     },
 
-    sendInput(input, nowMs) {
+    sendInput(input, nowMs, claim) {
       if (handle.isHost) return false;
       if (!inputTicker.due(nowMs)) return false;
       const link = links.get(handle.host);
       if (!link) return false;
-      link.send(encode({ t: 'input', seq: ++seq, input }));
+      link.send(encode({ t: 'input', seq: ++seq, input, ...(claim ? { claim } : {}) }));
       return true;
     },
 

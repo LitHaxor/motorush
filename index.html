@@ -234,6 +234,10 @@
         <div class="verdict">
           <div class="verdict__stamp verdict__stamp--busted">BUSTED</div>
           <p class="verdict__blurb">The highway patrol pulled you over. Bike impounded, race over.</p>
+          <!-- Your race is over; theirs is not. Being arrested or beaten
+               should not also mean losing sight of the race you were in. -->
+          <ol class="results" id="busted-results"></ol>
+          <p class="results__note" id="busted-note"></p>
           <dl class="stats" id="busted-stats"></dl>
           <div class="verdict__actions">
             <button class="btn btn--primary" data-action="restart">RIDE AGAIN</button>
@@ -251,6 +255,10 @@
         <div class="verdict">
           <div class="verdict__stamp verdict__stamp--wasted">WASTED</div>
           <p class="verdict__blurb">You took one beating too many. The pack rides on without you.</p>
+          <!-- Your race is over; theirs is not. Being arrested or beaten
+               should not also mean losing sight of the race you were in. -->
+          <ol class="results" id="wasted-results"></ol>
+          <p class="results__note" id="wasted-note"></p>
           <dl class="stats" id="wasted-stats"></dl>
           <div class="verdict__actions">
             <button class="btn btn--primary" data-action="restart">RIDE AGAIN</button>

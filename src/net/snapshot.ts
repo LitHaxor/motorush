@@ -2,7 +2,7 @@
 
 import { CAR_TYPES } from '../sim/traffic';
 import type { Pedestrian } from '../sim/pedestrians';
-import type { Car, Racer } from '../sim/types';
+import type { Car, Pickup, Racer } from '../sim/types';
 import { PED_STATES, SNAPSHOT_HZ, type CarSnapshot, type PedSnapshot, type RacerSnapshot, type StateMessage } from './protocol';
 
 const CAR_TYPE_BY_KEY = new Map(CAR_TYPES.map((t) => [t.key, t]));
@@ -40,6 +40,7 @@ export function captureCars(cars: readonly Car[]): CarSnapshot[] {
     swerve: round(c.swerve, 3),
     color: c.color,
     type: c.type.key,
+    active: c.active,
   }));
 }
 
@@ -62,9 +63,31 @@ export function applyCars(cars: readonly Car[], snapshot: readonly CarSnapshot[]
     car.brake = c.brake;
     car.swerve = c.swerve;
     car.color = c.color;
+    // The host decides which cars are on the road, not just where they are.
+    car.active = c.active;
     const type = CAR_TYPE_BY_KEY.get(c.type);
     if (type) car.type = type;
   }
+}
+
+/** Which pickups are gone. Host side. */
+export function capturePickups(pickups: readonly Pickup[]): number[] {
+  const out: number[] = [];
+  for (const p of pickups) if (p.taken) out.push(p.id);
+  return out;
+}
+
+/**
+ * Clear the ones the host says have been taken.
+ *
+ * One way only: a pickup does not come back, so a guest never needs telling
+ * that one has reappeared, and an id missing from a frame means nothing more
+ * than that nobody has touched it yet.
+ */
+export function applyPickups(pickups: readonly Pickup[], taken: readonly number[]): void {
+  if (!taken.length) return;
+  const gone = new Set(taken);
+  for (const p of pickups) if (gone.has(p.id)) p.taken = true;
 }
 
 /**
@@ -183,11 +206,28 @@ export function applyRacers(
   }
 }
 
+/**
+ * Seconds of round trip the position of a self-ridden bike is allowed to lag
+ * by. Generous: a link this slow is already being reported as poor on the HUD,
+ * and being dragged backwards is worse than being a few metres out.
+ */
+const OWNED_LAG_SECONDS = 0.75;
+
 export interface ReconcileOptions {
   /** Past this much disagreement in metres, stop blending and just snap. */
   snapMetres?: number;
   /** How fast the remaining error is closed, as a rate per second. */
   rate?: number;
+  /**
+   * Whether this machine is the one riding this bike.
+   *
+   * When it is, the host is echoing back a position this browser sent a moment
+   * ago - so converging on it drags the rider back towards where they were
+   * rather than correcting them. Everything the host alone can know is still
+   * taken; only the position is left alone, and only until the two disagree by
+   * more than a desync's worth.
+   */
+  owned?: boolean;
 }
 
 /**
@@ -218,7 +258,7 @@ export function reconcileLocalRacer(
   dt: number,
   options: ReconcileOptions = {},
 ): void {
-  const { snapMetres = 6, rate = 6 } = options;
+  const { snapMetres = 6, rate = 6, owned = false } = options;
 
   // The host owns everything that is not our own motion.
   racer.health = snapshot.health;
@@ -245,12 +285,33 @@ export function reconcileLocalRacer(
   }
 
   const error = Math.abs(snapshot.s - racer.s) + Math.abs(snapshot.lateral - racer.lateral);
-  if (error > snapMetres) {
+
+  /*
+   * How far apart the two may be before this is a desync rather than a delay.
+   *
+   * For a bike we ride ourselves, the host's copy is our own position as it
+   * was a round trip ago - so at a hundred milliseconds each way and two
+   * hundred and fifty kilometres an hour it is a good thirteen metres behind
+   * us, every single frame, with nothing wrong at all. Measured against the
+   * six metres that suits a bike we are only predicting, that would snap the
+   * rider backwards continuously on any real connection: the harder the link,
+   * the worse the rubber-band.
+   *
+   * So the allowance is made from the speed we are actually doing. What is
+   * left catches a genuine disagreement - the host refusing our claims and
+   * simulating us somewhere else - which no amount of latency explains.
+   */
+  const allowed = owned ? Math.max(snapMetres, racer.speed * OWNED_LAG_SECONDS) : snapMetres;
+  if (error > allowed) {
     racer.s = snapshot.s;
     racer.lateral = snapshot.lateral;
     racer.speed = snapshot.speed;
     return;
   }
+
+  // We are riding this one and the host agrees with us closely enough. Leave
+  // it alone rather than easing towards our own slightly older self.
+  if (owned) return;
 
   // Exponential convergence, framed per second so it behaves the same at 30fps
   // and at 120: a fixed per-frame fraction would correct twice as hard on a

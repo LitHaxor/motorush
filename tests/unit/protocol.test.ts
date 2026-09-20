@@ -14,9 +14,10 @@ const STATE: StateMessage = {
   }],
   cars: [{
     id: 5, s: 300, lateral: 1.2, speed: 22, dir: 1, brake: 0, swerve: 0.2,
-    color: 0xff0000, type: 'sedan',
+    color: 0xff0000, type: 'sedan', active: true,
   }],
   peds: [[9, 120, 14.2, 0, 0]],
+  taken: [2, 5],
   cops: [{
     id: 900, s: 80, lateral: 2, speed: 45, lean: 0, health: 100, hop: 0,
     state: 'ride', riderPhase: 'standing', attackDir: 0, attackTimer: 0, place: 8,

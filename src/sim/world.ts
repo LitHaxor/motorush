@@ -4,7 +4,8 @@
 // list of events. Nothing in here touches the DOM or Three.js, which is what
 // makes the whole thing unit-testable under plain Node.
 
-import { DIFFICULTY, RIVALS, POLICE, TRACK, CRASH, type DifficultyPreset } from './config';
+import { BIKE, DIFFICULTY, RIVALS, POLICE, TRACK, CRASH, type DifficultyPreset } from './config';
+import type { RiderClaim } from '../net/protocol';
 import { clamp, makeRng } from './mathx';
 import { Track } from './track';
 import { createRacer, isRiding, RIDER_COLORS, knockDown } from './racer';
@@ -34,6 +35,18 @@ import type {
 } from './types';
 
 export const COUNTDOWN_TIME = 3.6;
+
+/**
+ * How much faster than a motorcycle a claimed position may imply.
+ *
+ * Room for the ordinary overshoot of prediction and for a downhill run, and
+ * no room at all for teleporting up the road.
+ */
+const CLAIM_SPEED_SLACK = 1.35;
+/** The longest silence a single claim may be asked to cover, in seconds. */
+const CLAIM_MAX_GAP = 0.5;
+/** Slack in metres, so a claim is not refused over rounding. */
+const CLAIM_SLACK = 2;
 
 /**
  * The slowest a rider can be getting home at and still be considered to be
@@ -114,7 +127,8 @@ export class World implements AiWorldView {
    * bot while the rivals raced against one too.
    */
   get chased(): Racer {
-    return this.localRacer;
+    if (this.chasedId === null) return this.localRacer;
+    return this.field.find((r) => r.id === this.chasedId) ?? this.localRacer;
   }
   readonly rivals: Racer[] = [];
   cop: Racer | null = null;
@@ -131,9 +145,39 @@ export class World implements AiWorldView {
    * its own race quietly marked over, and the road stopping under it.
    */
   authority = true;
+
+  /**
+   * Whether the rest of the grid is simulated here, or merely drawn.
+   *
+   * A guest receiving frames should not be riding the other bikes as well as
+   * watching them. Doing both meant every bot was moved by the local AI and
+   * then snapped back to the host's position, sixty times a second - and any
+   * frame that arrived late let the guess show through, so the same bike
+   * appeared in two places at once. Frozen, they are moved only by what
+   * arrives on the wire, which is the only version anybody agrees on.
+   *
+   * It goes back to false the moment the host stops talking, because then the
+   * local simulation is all there is and a road full of stationary bikes is
+   * worse than a road full of guesses.
+   */
+  fieldFrozen = false;
   countdown = COUNTDOWN_TIME;
   elapsed = 0;
-  heat = 0;
+  /**
+   * The local rider's attention, as the HUD and the tests know it.
+   *
+   * A view onto this rider's entry in `heatBy` rather than a number of its
+   * own, so reading or setting it means what it always meant while every
+   * other rider has one too.
+   */
+  get heat(): number {
+    return this.heatOf(this.localRacer);
+  }
+
+  set heat(value: number) {
+    this.setHeat(this.localRacer, value);
+  }
+
   bustProgress = 0;
   /** Set when a patrol has reached you while you are down. */
   arrestPending = false;
@@ -404,9 +448,30 @@ export class World implements AiWorldView {
   }
 
   // ---------------------------------------------------------------- police
-  addHeat(amount: number): void {
+  /**
+   * Attention, per rider.
+   *
+   * It used to be one number for the whole world, which meant one rider could
+   * attract the police and that rider was whoever happened to be holding the
+   * host's screen. A guest could ride at two hundred and fifty all race and
+   * never be looked at - immunity, handed out by seat number.
+   */
+  private heatBy = new Map<number, number>();
+
+  /** Who the patrol is after, if there is one out. */
+  private chasedId: number | null = null;
+
+  heatOf(r: Racer): number {
+    return this.heatBy.get(r.id) ?? 0;
+  }
+
+  private setHeat(r: Racer, value: number): void {
+    this.heatBy.set(r.id, clamp(value, 0, POLICE.heatMax));
+  }
+
+  addHeat(amount: number, who: Racer = this.localRacer): void {
     if (this.cop) return;
-    this.heat = clamp(this.heat + amount * this.policeScale, 0, POLICE.heatMax);
+    this.setHeat(who, this.heatOf(who) + amount * this.policeScale);
   }
 
   spawnCop(): Racer {
@@ -415,9 +480,9 @@ export class World implements AiWorldView {
       kind: 'cop',
       name: 'HIGHWAY PATROL',
       color: 0x1c2b4a,
-      s: Math.max(0, this.localRacer.s - POLICE.spawnBehind),
-      lateral: this.localRacer.lateral,
-      speed: Math.max(this.localRacer.speed, 28),
+      s: Math.max(0, this.chased.s - POLICE.spawnBehind),
+      lateral: this.chased.lateral,
+      speed: Math.max(this.chased.speed, 28),
       speedScale: 1.07,
       aggression: 1,
     });
@@ -431,32 +496,52 @@ export class World implements AiWorldView {
     return cop;
   }
 
-  private stepPolice(dt: number, events: SimEvent[]): void {
-    const player = this.localRacer;
+  /**
+   * The riders the law is interested in: the people, not the bots.
+   *
+   * A patrol chasing a bot would be a patrol nobody sees. Every human on the
+   * grid can attract one, though, which is the point - being a guest is not a
+   * licence.
+   */
+  private hunted(humans: readonly Racer[]): readonly Racer[] {
+    return humans.length ? humans : [this.localRacer];
+  }
+
+  private stepPolice(dt: number, events: SimEvent[], humans: readonly Racer[] = []): void {
+    const people = this.hunted(humans);
 
     if (!this.cop) {
-      const over = player.speed - POLICE.speedThreshold;
-      if (over > 0 && isRiding(player)) {
-        const gain = (over / 20) * POLICE.speedHeat * this.policeScale;
-        this.heat = clamp(this.heat + gain * dt, 0, POLICE.heatMax);
-      } else {
-        this.heat = Math.max(0, this.heat - POLICE.heatDecay * dt);
+      // Everybody's own attention, risen or forgotten by how they are riding.
+      let worst: Racer | null = null;
+      for (const r of people) {
+        const over = r.speed - POLICE.speedThreshold;
+        if (over > 0 && isRiding(r)) {
+          this.setHeat(r, this.heatOf(r) + (over / 20) * POLICE.speedHeat * this.policeScale * dt);
+        } else {
+          this.setHeat(r, this.heatOf(r) - POLICE.heatDecay * dt);
+        }
+        if (!worst || this.heatOf(r) > this.heatOf(worst)) worst = r;
       }
-      if (this.heat >= POLICE.heatMax) {
+
+      if (worst && this.heatOf(worst) >= POLICE.heatMax) {
+        this.chasedId = worst.id;
         const cop = this.spawnCop();
-        this.heat = POLICE.heatMax * 0.55;
+        this.setHeat(worst, POLICE.heatMax * 0.55);
         events.push({ type: 'copSpawn', cop });
       }
       return;
     }
 
     const cop = this.cop;
+    // Whoever they came for, which is not always the rider holding this screen.
+    const player = this.chased;
 
     // Enough beatings and they back off.
     if (cop.knockdowns >= POLICE.giveUpKnockdowns) {
       events.push({ type: 'copGiveUp', cop, reason: 'beaten' });
       this.cop = null;
-      this.heat = 0;
+      this.setHeat(player, 0);
+      this.chasedId = null;
       this.arrestPending = false;
       this.arrestTimer = 0;
       return;
@@ -469,7 +554,8 @@ export class World implements AiWorldView {
       if (this.escapeTimer >= POLICE.escapeTime) {
         events.push({ type: 'copGiveUp', cop, reason: 'outrun' });
         this.cop = null;
-        this.heat = 0;
+        this.setHeat(player, 0);
+        this.chasedId = null;
         return;
       }
     } else {
@@ -490,13 +576,26 @@ export class World implements AiWorldView {
       const backAtTheBike = player.riderPhase === 'lifting' || player.riderPhase === 'mounting';
       if (player.state === 'ride' || backAtTheBike || this.arrestTimer > POLICE.arrestPatience) {
         player.state = 'busted';
-        this.endRace('busted', events);
+        // Somebody else's arrest is theirs to be told about: the state travels
+        // in the snapshot and their own browser puts the screen up. Ending the
+        // race here would end it for the rider watching, who was not arrested.
+        if (player === this.localRacer) {
+          this.endRace('busted', events);
+        } else {
+          this.cop = null;
+          this.chasedId = null;
+          this.arrestPending = false;
+          this.arrestTimer = 0;
+        }
         return;
       }
     }
 
-    // 0..1 for the HUD: how much trouble you are in right now.
-    this.bustProgress = clamp(1 - gap / POLICE.dangerRange, 0, 1);
+    // 0..1 for the HUD: how much trouble YOU are in right now, which is none
+    // at all when the patrol is behind somebody else.
+    this.bustProgress = player === this.localRacer
+      ? clamp(1 - gap / POLICE.dangerRange, 0, 1)
+      : 0;
   }
 
   // ------------------------------------------------------------------ race
@@ -507,7 +606,11 @@ export class World implements AiWorldView {
     // Finishing is the one ending that leaves something worth watching: the
     // riders you beat are still coming. Being arrested or beaten unconscious
     // is not, unless somebody else is riding one of these bikes for real.
-    this.followField = reason === 'finished' || this.sawRemotes;
+    // Keep the grid running whenever somebody else's race is still going: you
+    // finished and they have not, or there are people in this room at all. A
+    // guest counts even though no remote input ever reaches it - it is not the
+    // authority, which means by definition it is racing somebody.
+    this.followField = reason === 'finished' || this.sawRemotes || !this.authority;
     this.updateStandings();
     this.result = {
       reason,
@@ -542,6 +645,45 @@ export class World implements AiWorldView {
     }
     this.endRace(reason, events);
     return events;
+  }
+
+  /**
+   * Take a rider's word for where their own bike is - within reason.
+   *
+   * The rider holding the handlebars has the only version of their bike that
+   * is not a guess, so the host stops second-guessing it and simply believes
+   * them. Not blindly: a claim has to be reachable from where they were, at a
+   * speed a motorcycle can do, on ground a motorcycle can be on. Anything else
+   * is refused and that bike goes back to being simulated here, which is both
+   * the anti-cheat and the recovery path for a rider whose claims stop making
+   * sense.
+   *
+   * Returns whether the claim was believed.
+   */
+  acceptClaim(racerId: number, claim: RiderClaim, dt: number): boolean {
+    const r = this.racers.find((x) => x.id === racerId);
+    if (!r) return false;
+
+    // Nothing about a claim may be a number that is not one.
+    if (![claim.s, claim.lateral, claim.speed, claim.lean].every(Number.isFinite)) return false;
+
+    // Far enough to be impossible, rather than merely surprising: a frame can
+    // be late, so this allows for a gap in the stream rather than one tick.
+    const reach = BIKE.maxSpeed * CLAIM_SPEED_SLACK * Math.max(dt, CLAIM_MAX_GAP);
+    if (Math.abs(claim.s - r.s) > reach + CLAIM_SLACK) return false;
+    if (claim.speed > BIKE.maxSpeed * CLAIM_SPEED_SLACK || claim.speed < -1) return false;
+    // Off the road entirely is a claim to be somewhere there is no road.
+    if (Math.abs(claim.lateral) > this.track.edgeAt(claim.s) + TRACK.shoulder + CLAIM_SLACK) {
+      return false;
+    }
+
+    r.s = claim.s;
+    r.lateral = claim.lateral;
+    r.speed = claim.speed;
+    r.lean = claim.lean;
+    r.state = claim.state;
+    r.riderPhase = claim.riderPhase;
+    return true;
   }
 
   /** Queue a player attack. Returns true if the swing started. */
@@ -582,6 +724,8 @@ export class World implements AiWorldView {
     dt: number,
     playerInput: Readonly<RacerInput> = NEUTRAL_INPUT,
     remoteInputs?: ReadonlyMap<number, Readonly<RacerInput>>,
+    /** Where riders on other machines say their own bikes are. */
+    remoteClaims?: ReadonlyMap<number, RiderClaim>,
   ): SimEvent[] {
     const events: SimEvent[] = [];
     if (remoteInputs?.size) this.sawRemotes = true;
@@ -643,6 +787,10 @@ export class World implements AiWorldView {
     inputs.set(this.localRacer, isRiding(this.localRacer) ? localInput : NEUTRAL_INPUT);
     for (const r of field) {
       if (r === this.localRacer) continue;
+      // Somebody else's bike, on somebody else's machine. No AI runs for it
+      // here, and nothing below integrates it - it is where the last frame
+      // said it was.
+      if (this.fieldFrozen) continue;
       // A patrol with you on the ground stops racing and pulls over.
       if (r === this.cop && this.arrestPending) {
         inputs.set(r, copParkInput(r, this.localRacer.s, parkSpotBeside(this.localRacer, this.track)));
@@ -655,9 +803,24 @@ export class World implements AiWorldView {
       inputs.set(r, remote ?? aiInput(r, this, dt));
     }
 
+    // --- what other people say about their own bikes -------------------------
+    // Taken before anything is integrated, so the rest of the tick - fights,
+    // traffic, the crowd, the law - all happens against where these riders
+    // actually are rather than where this machine guessed they would be.
+    const believed = new Set<number>();
+    if (remoteClaims) {
+      for (const [id, claim] of remoteClaims) {
+        if (id === this.localRacer.id) continue;
+        if (this.acceptClaim(id, claim, dt)) believed.add(id);
+      }
+    }
+
     // --- integrate ----------------------------------------------------------
     const ctx = { raceDistance: this.raceDistance, elapsed: this.elapsed };
     for (const r of field) {
+      if (this.fieldFrozen && r !== this.localRacer) continue;
+      // Their machine has already moved this one.
+      if (believed.has(r.id)) continue;
       const evs = stepRacer(r, this.track, inputs.get(r) ?? NEUTRAL_INPUT, dt, ctx);
       for (const e of evs) {
         events.push(e);
@@ -683,8 +846,19 @@ export class World implements AiWorldView {
     );
     events.push(...collideWithTraffic(field, this.traffic));
     events.push(...collideRacers(field));
-    events.push(...collideObstacles(field, this.obstacles, this.localRacer.s));
-    events.push(...collectPickups(field, this.pickups));
+    // Only the authority decides who hit a tree.
+    //
+    // A guest that ran this for itself put itself on the tarmac, the host's
+    // next frame stood it back up, and it went down again immediately - a
+    // rider flickering between upright and thrown at the rate snapshots
+    // arrive. Crashes are the host's to call, like every other outcome; a
+    // guest learns about them the same way it learns it was punched.
+    if (this.authority) {
+      events.push(...collideObstacles(field, this.obstacles, this.localRacer.s));
+    }
+    // Taken by whoever the host says took it. A guest that decided for itself
+    // could pocket a box the host had already given to somebody else.
+    if (this.authority) events.push(...collectPickups(field, this.pickups));
     events.push(...stepPedestrians(this.pedestrians, field, this.localRacer.s, dt, this.track));
 
     for (const e of events) {
@@ -697,7 +871,7 @@ export class World implements AiWorldView {
     // there is nothing for them to decide. They are left on the road rather
     // than deleted: a police bike blinking out of the shot behind the results
     // screen looks like a bug, and standing there looks like the arrest it was.
-    if (!this.isOver) this.stepPolice(dt, events);
+    if (!this.isOver) this.stepPolice(dt, events, ridden);
 
     // --- outcomes -------------------------------------------------------------
     if (this.authority && !this.isOver && this.localRacer.health <= 0 && this.localRacer.state !== 'busted') {

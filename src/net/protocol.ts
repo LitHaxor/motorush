@@ -41,6 +41,16 @@ export interface CarSnapshot {
   color: number;
   /** CAR_TYPES key; only changes when the car recycles. */
   type: string;
+  /**
+   * Whether this car is on the road at all.
+   *
+   * The renderer skips a car that is not, and a guest runs its own traffic
+   * pool as a fallback - so without this the host decided where the cars were
+   * while each guest decided which of them existed. Riding towards one made it
+   * vanish, because the guest's own pool had recycled it while the host was
+   * still sending its position.
+   */
+  active: boolean;
 }
 
 /**
@@ -115,12 +125,48 @@ export interface StateMessage {
   cops: RacerSnapshot[];
   cars: CarSnapshot[];
   peds: PedSnapshot[];
+  /**
+   * Ids of the pickups that have been taken.
+   *
+   * The one piece of the world that stays changed once somebody touches it,
+   * and it was never on the wire at all - so every browser kept its own idea
+   * of what was still lying in the road. Two riders could take the same health
+   * box, and one consumed by the host went on glowing on everybody else's
+   * screen. Only the taken ones travel, because the rest are implied and
+   * because a race only ever has a couple of dozen.
+   */
+  taken: number[];
+}
+
+/**
+ * Where a rider says their own bike is.
+ *
+ * Sent alongside their input, and the point of it is that there stops being
+ * two answers. The host used to re-simulate every guest from their controls,
+ * so each guest's bike existed twice - once on the machine holding the
+ * handlebars and once on the host's - and the two disagreed constantly. Every
+ * disagreement arrived back as a correction, which is what made close racing
+ * feel like being dragged about.
+ *
+ * A rider owns their own bike; the host owns the world - traffic, the crowd,
+ * the police, and who hit whom. A claim is checked before it is believed: see
+ * `World.acceptClaim`.
+ */
+export interface RiderClaim {
+  s: number;
+  lateral: number;
+  speed: number;
+  lean: number;
+  state: RacerState;
+  riderPhase: RiderPhase;
 }
 
 export interface InputMessage {
   t: 'input';
   seq: number;
   input: RacerInput;
+  /** Absent from an older build, which is simply simulated as before. */
+  claim?: RiderClaim;
 }
 
 /**
@@ -230,8 +276,14 @@ export function decode(raw: string): NetMessage | null {
           swerve: num(c.swerve),
           color: num(c.color),
           type: typeof c.type === 'string' ? c.type : '',
+          // Absent means a frame from an older build: assume it is there,
+          // which is the harmless way to be wrong.
+          active: c.active !== false,
         }))
         .filter((c) => c.id >= 0),
+      taken: (Array.isArray(m.taken) ? m.taken : [])
+        .map((v) => num(v, -1))
+        .filter((v) => v >= 0),
       peds: (Array.isArray(m.peds) ? m.peds : [])
         .filter((v): v is unknown[] => Array.isArray(v) && v.length >= 5)
         .map((v) => [
@@ -245,9 +297,24 @@ export function decode(raw: string): NetMessage | null {
 
   if (m.t === 'input') {
     const i = (typeof m.input === 'object' && m.input !== null ? m.input : {}) as Record<string, unknown>;
+    const c = typeof m.claim === 'object' && m.claim !== null
+      ? (m.claim as Record<string, unknown>)
+      : null;
     return {
       t: 'input',
       seq: num(m.seq),
+      ...(c
+        ? {
+            claim: {
+              s: num(c.s),
+              lateral: num(c.lateral),
+              speed: num(c.speed),
+              lean: num(c.lean),
+              state: oneOf(c.state, RACER_STATES, 'ride'),
+              riderPhase: oneOf(c.riderPhase, RIDER_PHASES, 'tumble'),
+            },
+          }
+        : {}),
       input: {
         // Clamped, not just parsed: the sim trusts these to be in range, and
         // a throttle of 1e9 would otherwise be the cheapest cheat available.

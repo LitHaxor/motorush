@@ -162,7 +162,29 @@ export function generateObstacles(
     }
   }
 
+  /*
+   * In order along the road, because the collision check bisects it.
+   *
+   * The verges are walked first and the islands afterwards, so what comes out
+   * of the two passes is not sorted - and a bisection over an unsorted list
+   * silently misses obstacles rather than failing, which is the worst way for
+   * this to be wrong. Ties break on id so the order stays identical on every
+   * machine, which is the whole point of generating them this way.
+   */
+  out.sort((a, b) => a.s - b.s || a.id - b.id);
   return out;
+}
+
+/** First index whose `s` is at or past `target`. The list is built in order. */
+function lowerBound(obstacles: readonly Obstacle[], target: number): number {
+  let lo = 0;
+  let hi = obstacles.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (obstacles[mid].s < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /**
@@ -181,10 +203,22 @@ export function collideObstacles(
   const events: SimEvent[] = [];
   if (!obstacles.length) return events;
 
+  /*
+   * Only the stretch of road the riders are actually on.
+   *
+   * Walking every trunk on a seven-kilometre course for every rider, sixty
+   * times a second, is two thousand-odd checks per rider per frame to discover
+   * that almost all of them are a mile away. The list is built once in `s`
+   * order, so the span in range can be found by bisection and the rest never
+   * looked at - which is most of them.
+   */
+  const first = lowerBound(obstacles, aroundS - window);
+  const last = lowerBound(obstacles, aroundS + window);
+
   for (const r of racers) {
     if (!isRiding(r)) continue;
-    for (const o of obstacles) {
-      if (Math.abs(o.s - aroundS) > window) continue;
+    for (let i = first; i < last; i++) {
+      const o = obstacles[i];
       // A bike is longer than it is wide, so the two axes are tested apart
       // rather than as a circle: clipping a trunk with your shoulder counts.
       if (Math.abs(o.s - r.s) > o.radius + 1.1) continue;
