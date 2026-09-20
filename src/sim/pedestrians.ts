@@ -72,6 +72,16 @@ export interface Pedestrian {
   colour: number;
   /** The kerb-to-kerb extent of their crossing. */
   span: number;
+  /**
+   * How far beyond the tarmac edge this person walks, in metres.
+   *
+   * Kept instead of an absolute offset from the centreline, because the road
+   * does not keep a single width: where it forks, the edge moves from 9m out
+   * to 18m, and a pavement fixed at 14m from the middle is a pavement in the
+   * fast lane. This is measured from the kerb, wherever the kerb happens to
+   * be.
+   */
+  kerbOffset: number;
   /** Walkers only: which way along the pavement they are headed. */
   along: 1 | -1;
   /** Walkers only: the stretch of pavement they patrol. */
@@ -98,29 +108,39 @@ export interface CitySpan {
  * Lay out crossings and the people using them. `citySpans` comes from the same
  * seeded generator the renderer uses, so signs and stripes line up.
  */
+/** Just enough of the track to know where the tarmac stops. */
+export interface RoadEdge {
+  edgeAt(s: number): number;
+}
+
 export function generatePedestrians(
   citySpans: readonly CitySpan[],
   rng: Rng,
+  road: RoadEdge,
 ): { crossings: Crossing[]; pedestrians: Pedestrian[] } {
   const crossings: Crossing[] = [];
   const pedestrians: Pedestrian[] = [];
   let id = 0;
-  // Crossers wait on the kerb and step off it, so they start where the
-  // pavement is - not at 11.5m, which is inside the barrier and reads as
-  // somebody standing about in the middle of the road.
-  const span = TRACK.halfWidth + CITY.walkway[0];
-
   for (const seg of citySpans) {
     let s = seg.from + rng.range(40, 90);
     while (s < seg.to - 30) {
       crossings.push({ s, walkPhase: rng() * Math.PI * 2 });
       const count = rng.int(PED.perCrossing[0], PED.perCrossing[1]);
+      // Crossers wait on the kerb and step off it, so they start where the
+      // pavement actually is - measured from this stretch's own edge, which on
+      // a divided street is twice as far out as the number in the config.
+      const span = road.edgeAt(s) + CITY.walkway[0];
       for (let i = 0; i < count; i++) {
         const dir: 1 | -1 = rng.chance(0.5) ? 1 : -1;
         pedestrians.push({
           id: id++,
           kind: 'crosser',
-          s: s + rng.range(-1.6, 1.6),
+          // On the stripes, not beside them. The paint runs from the crossing
+          // point forward, so the walkers are placed about its middle and kept
+          // a half metre inside either end - a pedestrian whose shoulder is
+          // over the edge of the crossing still reads as being in the road.
+          s: s + CITY.crossingLength / 2
+            + rng.range(-1, 1) * Math.max(0, CITY.crossingLength / 2 - 0.5),
           lateral: -dir * span,
           height: 0,
           dir,
@@ -134,6 +154,7 @@ export function generatePedestrians(
           spinRate: 0,
           colour: rng.pick(PED_COLOURS),
           span,
+          kerbOffset: CITY.walkway[0],
           along: 1,
           minS: 0,
           maxS: 0,
@@ -146,14 +167,16 @@ export function generatePedestrians(
   // --- start line crowd ---------------------------------------------------
   // A marshal with the flag plus spectators lining the verge. They stay off
   // the road, but run wide and you will scatter them.
-  const verge = TRACK.halfWidth + 1.2;
   for (let i = 0; i < PED.startCrowd; i++) {
     const side: 1 | -1 = rng.chance(0.5) ? 1 : -1;
+    const at = i === 0 ? 6 : rng.range(-10, 46);
+    const verge = road.edgeAt(at) + 1.2;
+    const out = rng.range(0, 3.4);
     pedestrians.push({
       id: id++,
       kind: i === 0 ? 'marshal' : 'spectator',
-      s: i === 0 ? 6 : rng.range(-10, 46),
-      lateral: side * (verge + rng.range(0, 3.4)),
+      s: at,
+      lateral: side * (verge + out),
       height: 0,
       dir: side,
       speed: 0,
@@ -167,6 +190,7 @@ export function generatePedestrians(
       spinRate: 0,
       colour: rng.pick(PED_COLOURS),
       span: verge + 4,
+      kerbOffset: 1.2 + out,
       along: 1,
       minS: 0,
       maxS: 0,
@@ -178,18 +202,22 @@ export function generatePedestrians(
   // kerb, so you only hit one if you leave the road.
   // On the pavement: past the barrier at 4.5 so nobody is standing in the
   // road, and short of the building line at 8 so nobody is standing in a wall.
-  const pavement = TRACK.halfWidth + CITY.walkway[0];
   const pavementSpread = CITY.walkway[1] - CITY.walkway[0];
   for (const seg of citySpans) {
     const count = Math.round(((seg.to - seg.from) / 100) * PED.walkersPer100m);
     for (let i = 0; i < count; i++) {
       for (const side of [-1, 1] as const) {
         const along: 1 | -1 = rng.chance(0.5) ? 1 : -1;
+        const at = rng.range(seg.from, seg.to);
+        // From this stretch's own kerb. Measured from the constant instead, a
+        // stroller on a divided street walked up the middle of a lane.
+        const offset = CITY.walkway[0] + rng.range(0, pavementSpread);
+        const pavement = road.edgeAt(at);
         pedestrians.push({
           id: id++,
           kind: 'walker',
-          s: rng.range(seg.from, seg.to),
-          lateral: side * (pavement + rng.range(0, pavementSpread)),
+          s: at,
+          lateral: side * (pavement + offset),
           height: 0,
           dir: side,
           speed: rng.range(PED.strollSpeed[0], PED.strollSpeed[1]),
@@ -201,7 +229,8 @@ export function generatePedestrians(
           spin: 0,
           spinRate: 0,
           colour: rng.pick(PED_COLOURS),
-          span: pavement + pavementSpread,
+          span: pavement + offset,
+          kerbOffset: offset,
           along,
           minS: seg.from - 10,
           maxS: seg.to + 10,
@@ -225,17 +254,38 @@ export function launch(p: Pedestrian, impact: number, fromLateral: number): void
   p.spinRate = (6 + power * 7) * away;
 }
 
+/** Is this point close enough to somebody on the grid to be worth simulating? */
+function nearAnyRider(
+  s: number,
+  racers: readonly Racer[],
+  playerS: number,
+): boolean {
+  if (Math.abs(s - playerS) <= PED.activeRange) return true;
+  for (const r of racers) {
+    if (Math.abs(r.s - s) <= PED.activeRange) return true;
+  }
+  return false;
+}
+
 export function stepPedestrians(
   pedestrians: readonly Pedestrian[],
   racers: readonly Racer[],
   playerS: number,
   dt: number,
+  /** Where the tarmac ends, so a walker can follow the kerb as it moves. */
+  road?: RoadEdge,
 ): SimEvent[] {
   const events: SimEvent[] = [];
 
   for (const p of pedestrians) {
     // Skip anyone far up or down the road.
-    if (Math.abs(p.s - playerS) > PED.activeRange) continue;
+    // Near ANY rider, not just the one holding this screen.
+    //
+    // Online, every browser simulates the whole field but only one of them is
+    // authoritative. Stepping the crowd around a single rider left everybody
+    // else racing past pedestrians frozen mid-stride - and, worse, let two
+    // machines disagree about where somebody was standing when a bike arrived.
+    if (!nearAnyRider(p.s, racers, playerS)) continue;
 
     switch (p.state) {
       case 'waiting':
@@ -252,6 +302,13 @@ export function stepPedestrians(
       case 'strolling': {
         // Up and down the pavement, turning round at the end of the block.
         p.s += p.along * p.speed * dt;
+        // Follow the kerb rather than a fixed line: where the road opens into
+        // two carriageways the pavement moves out with it, and a walker who
+        // held their line would be left standing in a lane.
+        if (road) {
+          p.span = road.edgeAt(p.s) + p.kerbOffset;
+          p.lateral = Math.sign(p.lateral || 1) * p.span;
+        }
         if (p.s < p.minS) {
           p.s = p.minS;
           p.along = 1;

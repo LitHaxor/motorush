@@ -18,6 +18,7 @@ import {
   type BiomeSegment, type CitySegment, type DividedSection,
 } from './biomes';
 import { generatePedestrians, stepPedestrians, type Crossing, type Pedestrian } from './pedestrians';
+import { collideObstacles, generateObstacles, type Obstacle } from './obstacles';
 import type {
   DifficultyKey,
   EndReason,
@@ -79,6 +80,15 @@ export class World implements AiWorldView {
   readonly citySegments: CitySegment[];
   readonly crossings: Crossing[];
   readonly pedestrians: Pedestrian[];
+  /**
+   * Trees and anything else solid beside the road.
+   *
+   * Generated from the seed on its own random stream, so every browser in a
+   * room grows the identical wood whatever any of them managed to load - and
+   * so the renderer can never shift them by drawing a different number of
+   * random numbers than somebody else's renderer did.
+   */
+  readonly obstacles: Obstacle[];
 
   readonly player: Racer;
 
@@ -190,8 +200,9 @@ export class World implements AiWorldView {
     });
     this.traffic = new TrafficSystem(this.track, this.rng, { density: preset.traffic });
     this.pickups = generatePickups(this.track, this.rng, this.raceDistance);
+    this.obstacles = generateObstacles(this.track, this.biomes, seed);
     this.citySegments = citySegments(this.biomes);
-    const crowd = generatePedestrians(this.citySegments, this.rng);
+    const crowd = generatePedestrians(this.citySegments, this.rng, this.track);
     this.crossings = crowd.crossings;
     this.pedestrians = crowd.pedestrians;
 
@@ -661,11 +672,20 @@ export class World implements AiWorldView {
         this.addHeat(e.victim.kind === 'cop' ? POLICE.copHitHeat : POLICE.hitHeat);
       }
     }
-    this.traffic.step(dt, this.localRacer.s, this.elapsed, field);
+    // Everybody a person is riding: this screen's rider, plus any seat being
+    // driven from another browser. They are the ones the road has to be busy
+    // for - see `interested` in TrafficSystem.step.
+    const ridden = field.filter(
+      (r) => r === this.localRacer || remoteInputs?.has(r.id) === true,
+    );
+    this.traffic.step(
+      dt, this.localRacer.s, this.elapsed, field, this.localRacer.speed, ridden,
+    );
     events.push(...collideWithTraffic(field, this.traffic));
     events.push(...collideRacers(field));
+    events.push(...collideObstacles(field, this.obstacles, this.localRacer.s));
     events.push(...collectPickups(field, this.pickups));
-    events.push(...stepPedestrians(this.pedestrians, field, this.localRacer.s, dt));
+    events.push(...stepPedestrians(this.pedestrians, field, this.localRacer.s, dt, this.track));
 
     for (const e of events) {
       // Flattening a pedestrian is exactly the sort of thing that gets you

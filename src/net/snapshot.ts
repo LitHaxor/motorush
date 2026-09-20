@@ -77,13 +77,25 @@ export function applyCars(cars: readonly Car[], snapshot: readonly CarSnapshot[]
  */
 export function capturePeds(
   peds: readonly Pedestrian[],
-  aroundS: number,
+  /**
+   * Everybody who needs to be told about this crowd - one entry per rider a
+   * human is actually holding, not just the host.
+   *
+   * Culling around a single point was a fairness hole rather than a saving: a
+   * guest more than a couple of hundred metres from the host received no
+   * pedestrian frames at all, so the people in front of them were whatever
+   * their own machine had worked out. Both ends had them in the same places,
+   * being seeded alike, but nothing kept them in step - so a rider could be
+   * put down by somebody the host had already walked off the road.
+   */
+  centres: readonly number[],
   behind = 60,
   ahead = 260,
 ): PedSnapshot[] {
   const out: PedSnapshot[] = [];
+  if (!centres.length) return out;
   for (const p of peds) {
-    if (p.s < aroundS - behind || p.s > aroundS + ahead) continue;
+    if (!centres.some((c) => p.s >= c - behind && p.s <= c + ahead)) continue;
     const state = PED_STATES.indexOf(p.state as (typeof PED_STATES)[number]);
     out.push([
       p.id,

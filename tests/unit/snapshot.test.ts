@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { World } from '../../src/sim/world';
 import {
-  SnapshotBuffer, applyCars, applyRacers, captureCars, captureRacers, lerpCars, lerpRacers,
-  reconcileLocalRacer,
+  SnapshotBuffer, applyCars, applyRacers, captureCars, capturePeds, captureRacers,
+  lerpCars, lerpRacers, reconcileLocalRacer,
 } from '../../src/net/snapshot';
 import type { CarSnapshot, RacerSnapshot, StateMessage } from '../../src/net/protocol';
 
@@ -213,7 +213,6 @@ describe('traffic over the wire', () => {
     expect(b.sample(1150)?.cars[0].s).toBeCloseTo(10, 5);
   });
 });
-
 
 describe('riding our own bike and correcting it', () => {
   it('leaves our own rider out when asked, so prediction survives a frame', () => {
@@ -452,5 +451,39 @@ describe('a buffer between two races', () => {
 
     buffer.push(frame(8, 0.1, [racer(0, { s: 3 })]), 1020);
     expect(buffer.sample(1020)!.racers[0].s).toBe(3);
+  });
+});
+
+describe('the crowd is sent to everybody who is riding', () => {
+  const crowd = (positions: number[]) => positions.map((s, i) => ({
+    id: i, s, lateral: 14, height: 1.8, state: 'walking' as const,
+  })) as unknown as Parameters<typeof capturePeds>[0];
+
+  it('sends a guest the people in front of them, not the host', () => {
+    // The fairness hole: culling around one point meant a guest a kilometre up
+    // the road got no pedestrian frames at all, so the people they were about
+    // to ride into were whatever their own machine had worked out.
+    const peds = crowd([100, 1200]);
+    const hostOnly = capturePeds(peds, [100]);
+    expect(hostOnly.map((p) => p[0])).toEqual([0]);
+
+    const both = capturePeds(peds, [100, 1200]);
+    expect(both.map((p) => p[0])).toEqual([0, 1]);
+  });
+
+  it('sends each pedestrian once, however many riders can see them', () => {
+    // Two riders together must not double the frame.
+    const peds = crowd([500]);
+    const shot = capturePeds(peds, [480, 500, 520]);
+    expect(shot).toHaveLength(1);
+  });
+
+  it('still leaves out the ones nobody is near', () => {
+    const peds = crowd([100, 5000]);
+    expect(capturePeds(peds, [100]).map((p) => p[0])).toEqual([0]);
+  });
+
+  it('sends nothing when there is nobody to send it to', () => {
+    expect(capturePeds(crowd([100]), [])).toEqual([]);
   });
 });

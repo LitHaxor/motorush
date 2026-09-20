@@ -269,3 +269,123 @@ describe('cars vs. cars', () => {
     expect(chase.brake).toBe(0);
   });
 });
+
+describe('nothing is recycled in behind a slow rider', () => {
+  const track = new Track({ seed: 4, length: 6000 });
+
+  it('never puts a car behind a rider it would catch', () => {
+    // The bug: a quarter of same-direction recycles landed sixty metres back
+    // regardless of speed, so a rider crawling away from a crash was rear-ended
+    // by a car that had not existed a moment earlier.
+    const traffic = new TrafficSystem(track, makeRng(11), { density: 1 });
+    const CRAWL = 9; // the speed you remount at
+    for (let i = 0; i < 400; i++) {
+      const car = traffic.cars[i % traffic.cars.length];
+      traffic.respawn(car, 2000, false, CRAWL);
+      if (car.s < 2000) {
+        // If it was put behind, the rider must be pulling away from it.
+        expect(CRAWL).toBeGreaterThan(car.speed + TRAFFIC.overtakeMargin);
+      }
+    }
+  });
+
+  it('still lets a fast rider overtake traffic from behind', () => {
+    const traffic = new TrafficSystem(track, makeRng(12), { density: 1 });
+    let behind = 0;
+    for (let i = 0; i < 400; i++) {
+      const car = traffic.cars[i % traffic.cars.length];
+      traffic.respawn(car, 2000, false, 70);
+      if (car.s < 2000) behind++;
+    }
+    // Roughly a quarter of same-direction recycles, so this must not be zero -
+    // catching slower traffic is most of what makes the road feel busy.
+    expect(behind).toBeGreaterThan(10);
+  });
+});
+
+describe('the road is busy for everybody, not just one rider', () => {
+  const track = new Track({ seed: 6, length: 12000 });
+  const rider = (id: number, s: number, speed = 60) => {
+    const r = createRacer({ id, kind: id === 0 ? 'player' : 'rival', s });
+    r.speed = speed;
+    r.state = 'ride';
+    return r;
+  };
+
+  it('puts cars near a rider who has broken away from the field', () => {
+    // The online case: a rider a kilometre clear of the host used to ride an
+    // empty road, because the whole pool was recycled around one rider.
+    const traffic = new TrafficSystem(track, makeRng(21), { density: 1 });
+    const leader = rider(0, 5000);
+    const pack = [rider(1, 3000), rider(2, 3020), rider(3, 2980)];
+    traffic.prime(3000);
+
+    for (let i = 0; i < 600; i++) {
+      traffic.step(1 / 60, 3000, i / 60, [leader, ...pack], 60);
+    }
+    const nearLeader = traffic.cars.filter(
+      (c) => c.active && Math.abs(c.s - leader.s) < TRAFFIC.spawnAhead,
+    );
+    expect(nearLeader.length).toBeGreaterThan(0);
+  });
+
+  it('still keeps the pack supplied', () => {
+    const traffic = new TrafficSystem(track, makeRng(22), { density: 1 });
+    const leader = rider(0, 5000);
+    const pack = [rider(1, 3000), rider(2, 3020)];
+    traffic.prime(3000);
+    for (let i = 0; i < 600; i++) {
+      traffic.step(1 / 60, 3000, i / 60, [leader, ...pack], 60);
+    }
+    const nearPack = traffic.cars.filter(
+      (c) => c.active && Math.abs(c.s - 3000) < TRAFFIC.spawnAhead,
+    );
+    expect(nearPack.length).toBeGreaterThan(0);
+  });
+});
+
+describe('with a full grid, nothing appears in anybody’s view', () => {
+  const track = new Track({ seed: 7, length: 14000 });
+  const grid = (spread: number) => Array.from({ length: 8 }, (_, i) => {
+    const r = createRacer({ id: i, kind: i === 0 ? 'player' : 'rival', s: 2000 + i * spread });
+    r.speed = 60;
+    r.state = 'ride';
+    return r;
+  });
+
+  it('never drops a car into the road ahead of any of eight riders', () => {
+    // The unfair case: traffic is recycled into the far end of one rider's
+    // view, which with a field strung down the road is another rider's front
+    // garden. A car must never simply appear in front of somebody.
+    const riders = grid(300); // 2.1km from first to last
+    const traffic = new TrafficSystem(track, makeRng(31), { density: 1 });
+    traffic.prime(2000);
+
+    let violations = 0;
+    for (let i = 0; i < 1200; i++) {
+      const before = traffic.cars.map((c) => c.s);
+      traffic.step(1 / 60, riders[0].s, i / 60, riders, 60);
+      traffic.cars.forEach((c, k) => {
+        // A car whose position jumped is one that was just recycled.
+        if (Math.abs(c.s - before[k]) < 50) return;
+        for (const r of riders) {
+          if (c.s > r.s - TRAFFIC.spawnClearBehind && c.s < r.s + TRAFFIC.spawnClearAhead) {
+            violations++;
+          }
+        }
+      });
+    }
+    expect(violations).toBe(0);
+  });
+
+  it('still supplies a tightly packed grid', () => {
+    // When everybody is together there is no conflict to resolve, and the
+    // road must not go empty just because the check exists.
+    const riders = grid(15);
+    const traffic = new TrafficSystem(track, makeRng(32), { density: 1 });
+    traffic.prime(2000);
+    for (let i = 0; i < 600; i++) traffic.step(1 / 60, riders[0].s, i / 60, riders, 60);
+    const near = traffic.cars.filter((c) => c.active && Math.abs(c.s - riders[0].s) < TRAFFIC.spawnAhead);
+    expect(near.length).toBeGreaterThan(3);
+  });
+});

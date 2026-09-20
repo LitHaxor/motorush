@@ -13,6 +13,45 @@ export interface PbrSet {
   armMap: THREE.Texture | null;
 }
 
+/**
+ * One photographic building front, and the grid its windows sit on.
+ *
+ * The grid is the reason this is not just a texture. A facade tile is a real
+ * photograph of a real building, so its windows fall where they fall - and the
+ * lit windows we draw at dusk have to land on them rather than between them.
+ * Counting the rows and columns in the tile once, here, is what lets the two
+ * line up.
+ */
+export interface FacadeSet extends PbrSet {
+  /** Window columns in one tile of the texture. */
+  bays: number;
+  /** Window rows in one tile. */
+  floors: number;
+  /** Roughly how wide one tile is in metres, for sizing the repeat. */
+  tileWidth: number;
+  /** ...and how tall. A storey is about three metres. */
+  tileHeight: number;
+}
+
+export interface FacadeTextures {
+  sets: FacadeSet[];
+  /** False when the files could not be fetched and the canvas fallback is on. */
+  pbr: boolean;
+  dispose(): void;
+}
+
+/**
+ * The three fronts the city is built from, and what is in each tile.
+ *
+ * Counted off the textures themselves rather than guessed: get these wrong and
+ * the lit windows sit in the brickwork.
+ */
+const FACADES = [
+  { name: 'facade_brick', bays: 6, floors: 6, tileWidth: 21, tileHeight: 19 },
+  { name: 'facade_office', bays: 5, floors: 6, tileWidth: 19, tileHeight: 19 },
+  { name: 'facade_tower', bays: 14, floors: 8, tileWidth: 42, tileHeight: 25 },
+] as const;
+
 export interface GroundTextures {
   asphalt: PbrSet;
   grass: PbrSet;
@@ -107,6 +146,58 @@ export async function loadGroundTextures(
   } catch (err) {
     console.warn('[motorush] PBR textures unavailable, using procedural ground', err);
     return fallback(grass, grassAccent);
+  }
+}
+
+/**
+ * Load the building fronts.
+ *
+ * Kept apart from the ground set because it fails apart from it too: a city
+ * with flat-shaded buildings is a worse city, not a broken one, so a 404 here
+ * drops back to the drawn facades rather than taking the race with it.
+ */
+export async function loadFacadeTextures(
+  renderer: THREE.WebGLRenderer,
+): Promise<FacadeTextures> {
+  const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const loader = new THREE.TextureLoader();
+  const one = new THREE.Vector2(1, 1);
+  try {
+    const sets = await Promise.all(
+      FACADES.map(async (f): Promise<FacadeSet> => {
+        const [map, normalMap, roughnessMap] = await Promise.all([
+          loadOne(loader, `${BASE}/${f.name}_diff.jpg`),
+          loadOne(loader, `${BASE}/${f.name}_nor_gl.jpg`),
+          loadOne(loader, `${BASE}/${f.name}_rough.jpg`),
+        ]);
+        return {
+          // Repeat is set per building, from its own size, so these start at 1.
+          map: configure(map, one.clone(), true, aniso),
+          normalMap: configure(normalMap, one.clone(), false, aniso),
+          // Not an ARM pack: ambientCG ships roughness on its own, and the
+          // buildings want nothing from the metalness channel anyway.
+          armMap: configure(roughnessMap, one.clone(), false, aniso),
+          bays: f.bays,
+          floors: f.floors,
+          tileWidth: f.tileWidth,
+          tileHeight: f.tileHeight,
+        };
+      }),
+    );
+    return {
+      sets,
+      pbr: true,
+      dispose() {
+        for (const set of sets) {
+          set.map.dispose();
+          set.normalMap?.dispose();
+          set.armMap?.dispose();
+        }
+      },
+    };
+  } catch (err) {
+    console.warn('[motorush] facade textures unavailable, using drawn buildings', err);
+    return { sets: [], pbr: false, dispose() {} };
   }
 }
 
