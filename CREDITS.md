@@ -12,6 +12,19 @@ attribution, but the sources deserve it anyway.
 | Grass (terrain)            | [ambientCG — Grass005](https://ambientcg.com/view?id=Grass005) | CC0 |
 | Conifer branches (trees)   | [ambientCG — LeafSet019](https://ambientcg.com/view?id=LeafSet019) | CC0 |
 | Broadleaf leaves (trees)   | [ambientCG — LeafSet005](https://ambientcg.com/view?id=LeafSet005) | CC0 |
+| City facade (brick)        | [ambientCG — Facade018A](https://ambientcg.com/view?id=Facade018A) | CC0 |
+| City facade (office block) | [ambientCG — Facade019A](https://ambientcg.com/view?id=Facade019A) | CC0 |
+| City facade (glass tower)  | [ambientCG — Facade006](https://ambientcg.com/view?id=Facade006) | CC0 |
+
+### City buildings
+
+The buildings wear photographed fronts, tiled by scaling each box's UVs rather
+than the texture, so all five prototypes share one image while carrying their
+own number of storeys. Lights in the windows are a separate emissive map
+generated to the same grid as the photograph (`makeWindowLightsTexture`), which
+is what keeps a lit room behind the glass rather than a glow on the brickwork.
+Colour is kept at 1K and the normal and roughness maps at 512: surface detail
+on a building two hundred metres away is not worth six megabytes on a phone.
 
 ### Trees
 

@@ -26,10 +26,14 @@ import {
 } from './scenery';
 import { createBikeRig, disposeBikeGeometry, type BikeRig } from './bikemesh';
 import { createRiderRig, poseRiding, poseRunning, type RiderRig } from './rider';
+import { PED } from '../sim/pedestrians';
+import { STANDING, walkPose, type WalkPose } from './walk';
 import { Ragdoll, BikeTumble, scratchSkeleton } from './ragdoll';
 import { createCarMesh, createCarFromModel, disposeCarGeometry, type CarRig } from './carmesh';
 import { ParticleField, CameraShake } from './effects';
-import { loadGroundTextures, type GroundTextures } from './assets';
+import {
+  loadFacadeTextures, loadGroundTextures, type FacadeTextures, type GroundTextures,
+} from './assets';
 import { loadModels, CAR_MODELS, type ModelLibrary } from './models';
 import { loadFoliageAtlas, buildTreeVariants, buildGrassTuft, type TreeVariant } from './foliage';
 import { type NameTag, makeNameTag, updateNameTag } from './nametag';
@@ -59,6 +63,28 @@ const CAM = {
   height: 1.95,
   lookAhead: 15,
   lookHeight: 1.15,
+  /**
+   * Island half-width over which the camera's aim slides from the centreline
+   * to the middle of the carriageway. Roughly the width of one lane, so the
+   * move is spread over the first few metres of the split rather than landing
+   * in one frame.
+   */
+  splitBlend: 3.5,
+  /**
+   * A sideways move larger than this was not steered, so the camera follows it
+   * exactly instead of easing after it.
+   *
+   * Full lock moves the bike about 13.5 m/s sideways, which is 0.22m in a
+   * sixtieth of a second, so this is an order of magnitude beyond anything a
+   * rider can do and will only ever catch a track-imposed shift.
+   */
+  teleportLateral: 2.5,
+  /**
+   * How quickly the camera accepts that the rider has changed sides, per
+   * second. Slow enough that the swing reads as a look across rather than a
+   * cut, quick enough to have finished by the time they are settled.
+   */
+  sideRate: 2.2,
   baseFov: 62,
   speedFov: 14,
   boostFov: 5,
@@ -146,6 +172,27 @@ export class GameView {
   private readonly shake = new CameraShake();
 
   private camLateral = 0;
+  /**
+   * Where the camera is aiming across the road, smoothed.
+   *
+   * Held between frames because the thing it follows is not continuous: an
+   * island opens from nothing, and the moment it exists the aim point wants to
+   * be half a carriageway to one side. Ramping it in and then damping what is
+   * left is what keeps a split from throwing the camera sideways.
+   */
+  private camLookCentre = 0;
+  /**
+   * Which carriageway the camera believes it is on, eased between -1 and 1.
+   *
+   * Never read straight off `Math.sign(lateral)`. That inverts the instant a
+   * rider crosses the middle of a split, and the aim point is a median plus
+   * half a carriageway out on each side - so the camera was thrown twenty-odd
+   * metres across the road in a single frame every time somebody changed
+   * sides. Easing the side instead swings the view over as the rider crosses,
+   * and leaves the ramp at the mouth of a fork alone, because the side is not
+   * what changes there.
+   */
+  private camSide = 1;
   private time = 0;
   private quality: QualityLevel = 'high';
   private autoQuality: boolean;
@@ -153,6 +200,8 @@ export class GameView {
   private slowFrames = 0;
 
   private textures!: GroundTextures;
+  /** Photographed building fronts, or an empty set if they did not load. */
+  private facades: FacadeTextures = { sets: [], pbr: false, dispose() {} };
   private models!: ModelLibrary;
   private treeVariants: TreeVariant[] = [];
   private grassTuft: TreeVariant | null = null;
@@ -193,13 +242,15 @@ export class GameView {
     const view = new GameView(canvas, world, opts);
     const preset = view.preset;
     // Ground textures and props load in parallel; both fall back gracefully.
-    const [textures, models, foliage] = await Promise.all([
+    const [textures, models, foliage, facades] = await Promise.all([
       loadGroundTextures(view.renderer, { grass: preset.grass, grassAccent: preset.grassAccent }),
       loadModels(),
       loadFoliageAtlas(),
+      loadFacadeTextures(view.renderer),
     ]);
     view.textures = textures;
     view.models = models;
+    view.facades = facades;
     const foliageRng = makeRng(world.seed ^ 0x5eed);
     view.treeVariants = buildTreeVariants(foliage, foliageRng);
     view.grassTuft = buildGrassTuft(foliage, foliageRng);
@@ -268,9 +319,13 @@ export class GameView {
     this.road = buildRoad(world.track, this.preset, this.textures, world.biomes);
     this.scene.add(this.road.group);
 
+    // The seed, not the world's generator. Drawing from the shared one let the
+    // renderer shift the simulation's random sequence - and let two riders in
+    // the same room build different cities if one of them failed to load a
+    // texture the other had.
     this.scenery = buildScenery(
-      world.track, world.rng, this.preset, this.models,
-      world.biomes, this.treeVariants, this.grassTuft,
+      world.track, world.seed, this.preset, this.models,
+      world.biomes, this.treeVariants, this.grassTuft, this.facades, world.obstacles,
     );
     this.scene.add(this.scenery.group);
 
@@ -307,6 +362,8 @@ export class GameView {
     }
 
     this.camLateral = world.localRacer.lateral;
+    this.camLookCentre = 0;
+    this.camSide = Math.sign(world.localRacer.lateral || 1);
   }
 
   /** Swap in a fresh race (new seed means a new track, so this rebuilds). */
@@ -918,13 +975,18 @@ export class GameView {
   }
 
   /** Position and animate the crowd near the player. */
-  private syncPedestrians(_dt: number): void {
+  private syncPedestrians(dt: number): void {
     const playerS = this.world.localRacer.s;
     for (const ped of this.world.pedestrians) {
       const rig = this.pedRigs.get(ped.id);
       if (!rig) continue;
       const ds = ped.s - playerS;
-      const visible = ds > -60 && ds < 300;
+      // Never draw somebody the simulation has stopped thinking about. The
+      // crowd is only stepped within PED.activeRange, but this used to draw it
+      // to 300m - so every crosser between the two was rendered frozen
+      // mid-stride, standing motionless in a live carriageway. They were not
+      // walking on the road; they were parked on it.
+      const visible = ds > -60 && ds < PED.activeRange;
       rig.root.visible = visible;
       if (!visible) continue;
 
@@ -951,24 +1013,27 @@ export class GameView {
             : at.heading - ped.dir * Math.PI / 2,
           0,
         );
-        const swing = Math.sin(this.time * ped.speed * 4.5 + ped.id) * 0.55;
-        rig.legL.rotation.x = swing;
-        rig.legR.rotation.x = -swing;
-        rig.armL.rotation.x = -swing * 0.7;
-        rig.armR.rotation.x = swing * 0.7;
+        // Integrated rather than read off the clock. A phase derived from
+        // absolute time is only continuous while the rate never changes - the
+        // moment it does, the argument jumps by however many radians have
+        // accumulated and the legs snap to somewhere else entirely.
+        rig.phase += dt * ped.speed * 4.5;
+        // A hurried walk is a bigger walk, not merely a faster one.
+        const stride = clamp(ped.speed / 2.1, 0.5, 1);
+        // Offset per person so a crowd is not one body marching in eight places.
+        applyWalk(rig, walkPose(rig.phase + ped.id, stride));
       } else {
         // Waiting or cheering: face the road, bounce, wave.
         rig.root.rotation.set(0, at.heading + (ped.lateral > 0 ? Math.PI / 2 : -Math.PI / 2), 0);
-        rig.legL.rotation.x = 0;
-        rig.legR.rotation.x = 0;
+        applyWalk(rig, STANDING);
         if (ped.state === 'cheering') {
           const t = this.time * 6 + ped.timer;
           rig.root.position.y = at.y + Math.abs(Math.sin(t)) * 0.12;
           rig.armL.rotation.x = -2.2 + Math.sin(t) * 0.5;
           rig.armR.rotation.x = -2.2 + Math.cos(t) * 0.5;
-        } else {
-          rig.armL.rotation.x = 0;
-          rig.armR.rotation.x = 0;
+          // Arms up means elbows nearly straight, or they read as folded.
+          rig.forearmL.rotation.x = 0.1;
+          rig.forearmR.rotation.x = 0.1;
         }
       }
     }
@@ -980,7 +1045,21 @@ export class GameView {
     const track = world.track;
     const speedNorm = clamp(p.speed / BIKE.maxSpeed, 0, 1);
 
-    this.camLateral = damp(this.camLateral, p.lateral, 3.4, dt);
+    /*
+     * Follow the bike sideways - but go with it when it is moved rather than
+     * ridden.
+     *
+     * Where a split opens under a rider the track ejects them from the island
+     * in one step: measured at over five metres in a single frame. Damping
+     * towards that leaves the camera five metres behind the bike and a third
+     * of a second late, which is the lurch-then-catch-up at the mouth of every
+     * fork. No rider can steer that far in a frame, so a jump this large is not
+     * steering, and the camera simply goes with it.
+     */
+    const moved = Math.abs(p.lateral - this.camLateral);
+    this.camLateral = moved > CAM.teleportLateral
+      ? p.lateral
+      : damp(this.camLateral, p.lateral, 3.4, dt);
     const down = this.downAnim.get(p.id) ?? 0;
     const back = CAM.back + speedNorm * CAM.backSpeedGain + down * 2.4;
 
@@ -994,9 +1073,21 @@ export class GameView {
     // off the carriageway and leaves the rider at the edge of frame. Aim at
     // the middle of the carriageway they are actually on.
     const lookMedian = track.medianAt(p.s + CAM.lookAhead);
-    const lookCentre = lookMedian > 0
-      ? Math.sign(p.lateral || 1) * (lookMedian + track.halfWidth * 0.5)
-      : 0;
+    // Faded in with the island rather than switched on by it. Testing
+    // `median > 0` made this a step: one frame the aim point was the
+    // centreline, the next it was half a carriageway to the side, and the
+    // camera was thrown sideways at the mouth of every split - and again
+    // where it closed. Over the first few metres of island the two blend.
+    const opening = clamp(lookMedian / CAM.splitBlend, 0, 1);
+    this.camSide = damp(this.camSide, Math.sign(p.lateral || 1), CAM.sideRate, dt);
+    const target = this.camSide * (lookMedian + track.halfWidth * 0.5) * opening;
+    // Deliberately NOT damped on top of this. The ramp already makes the
+    // target continuous, and the island itself opens over a hundred metres of
+    // road - so the aim point is moving slowly on its own. Damping it as well
+    // measured worse, not better: the camera spent the whole ramp catching up
+    // and swung further per frame than it had any need to.
+    const lookCentre = target;
+    this.camLookCentre = target;
     const lookLateral = lookCentre + (p.lateral - lookCentre) * 0.55;
     const ahead = track.toWorld(p.s + CAM.lookAhead, lookLateral, this.tmpSample);
     this.tmpVec2.set(ahead.x, ahead.y + CAM.lookHeight, ahead.z);
@@ -1054,10 +1145,31 @@ export class GameView {
     this.particles.dispose();
     this.sky.dispose();
     this.textures.dispose();
+    this.facades.dispose();
     this.models.dispose();
     this.composer.dispose();
     disposeBikeGeometry();
     disposeCarGeometry();
     this.renderer.dispose();
   }
+}
+
+/**
+ * Write a walk pose onto a rig.
+ *
+ * Knees and elbows fold the opposite way to the joint above them, which is
+ * the whole reason they are joints and not hinges: a knee that folded forward
+ * would be a bird's.
+ */
+function applyWalk(rig: PedestrianRig, pose: WalkPose): void {
+  rig.legL.rotation.x = pose.hipL;
+  rig.legR.rotation.x = pose.hipR;
+  rig.shinL.rotation.x = -pose.kneeL;
+  rig.shinR.rotation.x = -pose.kneeR;
+  rig.armL.rotation.x = pose.shoulderL;
+  rig.armR.rotation.x = pose.shoulderR;
+  rig.forearmL.rotation.x = pose.elbowL;
+  rig.forearmR.rotation.x = pose.elbowR;
+  rig.body.position.y = pose.bob;
+  rig.body.rotation.x = pose.lean;
 }

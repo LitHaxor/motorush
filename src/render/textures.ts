@@ -267,6 +267,72 @@ export function makeFacadeTexture({
 }
 
 /**
+ * Lights on in some of the windows, as an emissive map.
+ *
+ * Black everywhere except the lit ones, because an emissive map is multiplied
+ * by the emissive colour - so the dark cells cost nothing and the lit ones
+ * glow on their own at dusk, without a light source anywhere near them.
+ *
+ * The grid is handed in rather than invented: it has to match the window grid
+ * of the photograph this is laid over, or the lights come on in the
+ * brickwork. Glows are drawn soft and slightly larger than the opening for
+ * the same reason - a rectangle that is a few pixels out reads as a mistake,
+ * where a soft pool of light reads as a lit room behind glass.
+ */
+export function makeWindowLightsTexture({
+  cols = 6,
+  rows = 6,
+  litChance = 0.3,
+  warm = '255, 214, 140',
+}: {
+  cols?: number;
+  rows?: number;
+  litChance?: number;
+  warm?: string;
+} = {}): THREE.CanvasTexture {
+  // Enough pixels for the glow to be smooth, without paying for a grid nobody
+  // can count at racing speed.
+  const cell = 32;
+  const w = Math.min(1024, Math.max(64, cols * cell));
+  const h = Math.min(1024, Math.max(64, rows * cell));
+  const c = canvas(w, h);
+  const ctx = ctx2d(c);
+
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, w, h);
+
+  const cw = w / cols;
+  const ch = h / rows;
+  for (let r = 0; r < rows; r++) {
+    for (let b = 0; b < cols; b++) {
+      if (Math.random() >= litChance) continue;
+      const cx = (b + 0.5) * cw;
+      const cy = (r + 0.5) * ch;
+      // Rooms are not all lit to the same brightness, and a row of identical
+      // windows is the quickest way to make a building look printed.
+      const strength = 0.55 + Math.random() * 0.45;
+
+      // A window, not a headlight. The halo has to stay inside its own cell -
+      // a glow as wide as the cell merges with its neighbours and the whole
+      // wall turns into a row of orbs rather than a building with lights on.
+      const ww = cw * 0.52;
+      const wh = ch * 0.58;
+      const halo = ctx.createRadialGradient(cx, cy, Math.min(ww, wh) * 0.4, cx, cy, Math.max(ww, wh) * 0.85);
+      halo.addColorStop(0, `rgba(${warm}, ${strength * 0.45})`);
+      halo.addColorStop(1, `rgba(${warm}, 0)`);
+      ctx.fillStyle = halo;
+      ctx.fillRect(cx - cw * 0.5, cy - ch * 0.5, cw, ch);
+
+      // The lit pane itself, which is what gives the light an edge and a shape.
+      ctx.fillStyle = `rgba(${warm}, ${strength})`;
+      ctx.fillRect(cx - ww / 2, cy - wh / 2, ww, wh);
+    }
+  }
+
+  return finish(c, { aniso: 4 });
+}
+
+/**
  * W-beam guardrail. The U axis runs across the rail's height, so the banding
  * here becomes the horizontal fold of the beam.
  */

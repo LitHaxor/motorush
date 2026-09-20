@@ -7,11 +7,16 @@ import type { Track } from '../sim/track';
 import { CITY } from '../sim/config';
 import type { Rng, PickupKind } from '../sim/types';
 import type { SkyPreset } from './palette';
-import { makeTerrainElevation, ribbonGeometry, START_RUNUP } from './roadmesh';
+import { makeTerrainElevation, ribbonGeometry, START_RUNUP, type Band } from './roadmesh';
 import {
-  makeSignTexture, makeFacadeTexture, makeCheckerTexture, makeZebraTexture, makeBarkTexture,
+  makeSignTexture, makeFacadeTexture, makeWindowLightsTexture, makeCheckerTexture,
+  makeZebraTexture, makeBarkTexture,
 } from './textures';
 import { instanceModel, FIRST_BROADLEAF, type ModelLibrary } from './models';
+import type { FacadeSet, FacadeTextures } from './assets';
+import type { Obstacle } from '../sim/obstacles';
+import { makeRng } from '../sim/mathx';
+import { chordBow, islandDepth, maxChordLength } from './siting';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { inCity, biomeAt, coastAt, type BiomeSegment } from '../sim/biomes';
 import type { TreeVariant, TreeSpecies } from './foliage';
@@ -117,15 +122,36 @@ function chunkInstances(mesh: THREE.InstancedMesh): THREE.InstancedMesh[] {
 }
 
 
+/**
+ * Keeps scenery's randomness clear of the simulation's.
+ *
+ * Scenery used to draw from the world's own generator, which meant the
+ * renderer could shift the simulation's random sequence simply by drawing a
+ * different number of numbers - and it did, because half of it sits behind
+ * `if (asset.loaded)`. A rider whose foliage failed to load got different
+ * buildings from everybody else in the room.
+ */
+const SCENERY_SALT = 0x51ce;
+/** Tree *appearance* draws from here, so a missing atlas cannot move a wall. */
+const FOLIAGE_SALT = 0xf01a;
+
 export function buildScenery(
   track: Track,
-  rng: Rng,
+  seed: number,
   preset: SkyPreset,
   models: ModelLibrary,
   biomes: readonly BiomeSegment[],
   treeVariants: readonly TreeVariant[] = [],
   grassTuft: TreeVariant | null = null,
+  /** Photographed building fronts. Empty means the drawn ones are used. */
+  facades: FacadeTextures = { sets: [], pbr: false, dispose() {} },
+  /** Where the simulation says the trees are. Drawn, not decided, here. */
+  obstacles: readonly Obstacle[] = [],
 ): SceneryHandle {
+  const rng: Rng = makeRng((seed ^ SCENERY_SALT) >>> 0);
+  // Appearance only - species, tint, which way a trunk faces. Positions and
+  // heights belong to the simulation, because they are what you hit.
+  const foliageRng: Rng = makeRng((seed ^ FOLIAGE_SALT) >>> 0);
   const group = new THREE.Group();
   group.name = 'scenery';
   const disposables: { dispose(): void }[] = [];
@@ -173,86 +199,33 @@ export function buildScenery(
   interface TreeSpot { s: number; lateral: number; height: number; rot: number; kind: number; tint: number }
   const treePlacements: TreeSpot[] = [];
 
+  /*
+   * The wood, as the simulation planted it.
+   *
+   * Positions and heights are not decided here any more. They are what a rider
+   * collides with, so they belong to the simulation - which grows them from
+   * the room's seed on a stream of its own, so every browser in a race has the
+   * identical trees in the identical places. All that is left here is what a
+   * tree looks like: which species, which way round, and how it is tinted.
+   */
   if (treeVariants.length) {
-    for (let s = -START_RUNUP; s < track.length; s += rng.range(6, 13)) {
-      const biome = biomeAt(biomes, s);
-      const density = DENSITY_BY_BIOME[biome] ?? DENSITY_BY_BIOME.country;
-      const species = SPECIES_BY_BIOME[biome] ?? SPECIES_BY_BIOME.country;
-      const urban = biome === 'city';
-      const sea = coastAt(biomes, s);
-
-      for (const sign of [-1, 1]) {
-        if (rng.chance(density.skip)) continue;
-        // Nothing grows out in the water.
-        if (sea.blend > 0.4 && sign === sea.side) continue;
-
-        const here = edgeAt(s);
-        const distance = urban || density.reach <= 0
-          ? rng.range(here + 6, here + 9)
-          : rng.range(here + 2, Math.max(here + 6, density.reach));
-
-        const pick = species[Math.floor(rng() * species.length)];
-        const pool = bySpecies.get(pick) ?? bySpecies.get('broadleaf') ?? [0];
-        const kind = pool[Math.floor(rng() * pool.length)];
-        const variant = treeVariants[kind];
-        // Bushes are shrubs, whatever biome they are in.
-        const range: [number, number] = variant.species === 'bush'
-          ? [1.4, 3.2]
-          : density.height;
-
-        // Keep the canopy off the carriageway. A tree's crown spreads with its
-        // height, so one planted close to the verge has to be a small one -
-        // which is also how roadside planting actually looks.
-        const clearance = Math.max(0, distance - here - 0.5);
-        const maxHeight = clearance / Math.max(0.05, variant.radius * 0.85);
-        const height = Math.min(rng.range(range[0], range[1]), maxHeight);
-        if (height < range[0] * 0.45) continue;
-
-        treePlacements.push({
-          s,
-          lateral: sign * distance,
-          height,
-          rot: rng() * Math.PI * 2,
-          // Subtle per-tree tint so no two neighbours match exactly.
-          tint: rng.range(0.78, 1.12),
-          kind,
-        });
-      }
-    }
-  }
-
-  // ------------------------------------------------------------- islands
-  // A fork's island is planted, which is what makes it read as something you
-  // cannot cut across rather than a wide grass median.
-  if (treeVariants.length) {
-    for (const seg of track.divided) {
-      if (!seg.fork) continue;
-      for (let s = seg.from + 12; s < seg.to - 12; s += rng.range(7, 16)) {
-        const median = track.medianAt(s);
-        if (median < 4) continue;
-        // In town the island is a city block, handled with the buildings.
-        if (biomeAt(biomes, s) === 'city') continue;
-        const pick = rng.chance(0.45) ? 'bush' : biomeAt(biomes, s) === 'jungle' ? 'jungle' : 'conifer';
-        const pool = bySpecies.get(pick as TreeSpecies) ?? bySpecies.get('bush') ?? [0];
-        const kind = pool[Math.floor(rng() * pool.length)];
-        const variant = treeVariants[kind];
-        // Fit the crown inside the island so it does not hang over a lane.
-        const room = median - 1.2;
-        if (room <= 0.5) continue;
-        const height = Math.min(
-          variant.species === 'bush' ? rng.range(1.4, 3) : rng.range(6, 14),
-          room / Math.max(0.05, variant.radius * 0.9),
-        );
-        if (height < 1) continue;
-        treePlacements.push({
-          s,
-          lateral: rng.range(-room * 0.55, room * 0.55),
-          height,
-          rot: rng() * Math.PI * 2,
-          tint: rng.range(0.8, 1.1),
-          kind,
-        });
-      }
+    for (const o of obstacles) {
+      const biome = biomeAt(biomes, o.s);
+      const species = o.onIsland
+        ? (foliageRng.chance(0.45) ? ['bush'] : biome === 'jungle' ? ['jungle'] : ['conifer'])
+        : (SPECIES_BY_BIOME[biome] ?? SPECIES_BY_BIOME.country);
+      const pick = species[Math.floor(foliageRng() * species.length)] as TreeSpecies;
+      const pool = bySpecies.get(pick) ?? bySpecies.get('broadleaf') ?? [0];
+      const kind = pool[Math.floor(foliageRng() * pool.length)];
+      treePlacements.push({
+        s: o.s,
+        lateral: o.lateral,
+        height: o.height,
+        rot: foliageRng() * Math.PI * 2,
+        // Subtle per-tree tint so no two neighbours match exactly.
+        tint: foliageRng.range(0.78, 1.12),
+        kind,
+      });
     }
   }
 
@@ -492,12 +465,39 @@ export function buildScenery(
   // -------------------------------------------------------------- buildings
   // City blocks: a handful of facade prototypes, each instanced along the
   // built-up stretches so a whole downtown costs a few draw calls.
+  /**
+   * The city's stock of buildings.
+   *
+   * Fourteen rather than five, because a block built from five shapes is
+   * read as a repeat within about two hundred metres. They cost almost
+   * nothing: each is one instanced draw call however many of it are standing,
+   * and they share three photographs between them.
+   *
+   * `facade` picks which photograph, and it is chosen by width rather than by
+   * taste. A tile of the tower front carries fourteen windows across, so on a
+   * fourteen-metre building each window comes out a metre wide and the thing
+   * reads as a filing cabinet - that front only goes on the wide blocks.
+   * `tint` multiplies the photograph, which is what turns three images into
+   * fourteen buildings: the same brick, weathered differently.
+   */
   const PROTOTYPES = [
-    { w: 16, d: 14, h: 11, floors: 3, bays: 4, wall: '#7a6a5c', trim: '#4a3f36' },
-    { w: 20, d: 16, h: 18, floors: 5, bays: 5, wall: '#5f6670', trim: '#3a4048' },
-    { w: 14, d: 18, h: 26, floors: 8, bays: 3, wall: '#8a7264', trim: '#544339' },
-    { w: 24, d: 20, h: 15, floors: 4, bays: 6, wall: '#6b5f6e', trim: '#403845' },
-    { w: 18, d: 15, h: 34, floors: 11, bays: 4, wall: '#55606b', trim: '#343c45' },
+    // --- brick terraces and mid-rise: the everyday street wall -------------
+    { w: 16, d: 14, h: 11, floors: 3, bays: 4, wall: '#7a6a5c', trim: '#4a3f36', facade: 0, tint: 0xffffff },
+    { w: 19, d: 15, h: 14, floors: 4, bays: 5, wall: '#7a6a5c', trim: '#4a3f36', facade: 0, tint: 0xf0ebe3 },
+    { w: 14, d: 17, h: 19, floors: 6, bays: 4, wall: '#8a7264', trim: '#544339', facade: 0, tint: 0xe6dbcd },
+    { w: 22, d: 18, h: 16, floors: 5, bays: 6, wall: '#6b5f6e', trim: '#403845', facade: 0, tint: 0xdccec1 },
+    { w: 17, d: 16, h: 24, floors: 8, bays: 4, wall: '#8a7264', trim: '#544339', facade: 0, tint: 0xf6f2ea },
+    // --- offices: darker, squarer, taller ---------------------------------
+    { w: 20, d: 16, h: 18, floors: 5, bays: 5, wall: '#5f6670', trim: '#3a4048', facade: 1, tint: 0xffffff },
+    { w: 18, d: 18, h: 27, floors: 8, bays: 5, wall: '#55606b', trim: '#343c45', facade: 1, tint: 0xe8ecf0 },
+    { w: 24, d: 20, h: 21, floors: 6, bays: 6, wall: '#6b5f6e', trim: '#403845', facade: 1, tint: 0xdbe0e6 },
+    { w: 16, d: 19, h: 33, floors: 10, bays: 4, wall: '#55606b', trim: '#343c45', facade: 1, tint: 0xf0f3f6 },
+    { w: 21, d: 17, h: 41, floors: 13, bays: 5, wall: '#4f5a66', trim: '#2f363e', facade: 1, tint: 0xeef1f4 },
+    // --- the wide ones, where a curtain wall is the right size ------------
+    { w: 38, d: 22, h: 30, floors: 9, bays: 12, wall: '#5f6670', trim: '#3a4048', facade: 2, tint: 0xffffff },
+    { w: 44, d: 24, h: 44, floors: 14, bays: 14, wall: '#4f5a66', trim: '#2f363e', facade: 2, tint: 0xeef1f4 },
+    { w: 34, d: 26, h: 56, floors: 18, bays: 11, wall: '#55606b', trim: '#343c45', facade: 2, tint: 0xe2e7ec },
+    { w: 40, d: 20, h: 23, floors: 7, bays: 13, wall: '#6b5f6e', trim: '#403845', facade: 2, tint: 0xf7f8fa },
   ];
 
   const buildingSlots: THREE.Matrix4[][] = PROTOTYPES.map(() => []);
@@ -507,62 +507,70 @@ export function buildScenery(
   const bs = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
 
-  // A fork running through town splits around a block of buildings, not a
-  // stand of trees.
-  for (const fork of track.divided) {
-    if (!fork.fork) continue;
-    let s = fork.from + 20;
-    while (s < fork.to - 20) {
-      if (biomeAt(biomes, s) !== 'city') {
-        s += 20;
-        continue;
-      }
-      const median = track.medianAt(s);
-      const idx = rng.int(0, PROTOTYPES.length - 1);
-      const proto = PROTOTYPES[idx];
-      // Only what actually fits between the carriageways.
-      const room = (median - 1.5) * 2;
-      if (room < 8) {
-        s += 20;
-        continue;
-      }
-      const jitter = Math.min(rng.range(0.85, 1.15), room / proto.w, room / proto.d);
-      const width = proto.w * jitter;
-      const at = track.toWorld(s + width / 2, 0);
-      bv.set(at.x, at.y + (proto.h * jitter) / 2 - 0.4, at.z);
-      bq.setFromAxisAngle(up, at.heading);
-      bs.set(jitter, jitter, jitter);
-      buildingSlots[idx].push(bm.compose(bv, bq, bs).clone());
-      s += width + rng.range(2, 7);
-    }
-  }
-
-  // A city fork's island is a block of its own, not a lawn. The island
-  // planting above deliberately skips town and leaves this to us.
+  /*
+   * The island between two carriageways, built on as a block of city.
+   *
+   * One loop for every island, fork or median alike. There used to be two -
+   * one for forks and one for anything wide enough - and they ran over the
+   * same ground, so a fork island got two rows of buildings standing inside
+   * each other. The second of them also took no account of the curve, which
+   * is how a block ended up in a live carriageway.
+   */
   for (const seg of track.divided) {
     let s = seg.from + 10;
+    // Where this island actually opened up, so its nose can be left clear.
+    let openedAt: number | null = null;
     while (s < seg.to - 10) {
       const median = track.medianAt(s);
       // Needs to be a real island, in town, with room for something to stand on.
       if (median < CITY.islandMinHalfWidth || biomeAt(biomes, s) !== 'city') {
+        openedAt = null;
+        s += 12;
+        continue;
+      }
+      openedAt ??= s;
+      /*
+       * Nothing on the nose of the island.
+       *
+       * A rider meeting a split head-on sees whatever stands on it dead ahead,
+       * and on a bend it stays dead ahead while the lane curves away - which
+       * reads as a wall across the road rather than as a fork to pick a side
+       * of. Leaving the first stretch as bare kerb gives the split somewhere
+       * to be read from before there is anything solid in the way.
+       */
+      if (s - openedAt < ISLAND_NOSE_CLEAR) {
         s += 12;
         continue;
       }
       const idx = rng.int(0, PROTOTYPES.length - 1);
       const proto = PROTOTYPES[idx];
-      // Shrink to fit between the island's own pavements, not just between
-      // the carriageways - otherwise the block stands on its own kerb.
-      const room = (median - CITY.islandPavement - 0.4) * 2;
-      const fit = Math.min(rng.range(0.7, 1.0), room / proto.d);
-      if (fit < 0.35) {
+      const curve = track.toWorld(s, 0).curvature;
+      const longest = maxChordLength(curve, FOLLOW_BOW);
+      const alongScale = Math.max(0.35, Math.min(rng.range(0.8, 1.1), longest / proto.w));
+      const width = proto.w * alongScale;
+      // The one rule: pavement off, then the bow of the curve off, and what
+      // is left is what may be built on.
+      const bow = chordBow(width, curve);
+      const buildable = islandDepth(median, CITY.islandPavement + 0.4, bow);
+      if (buildable < 6) {
         s += 12;
         continue;
       }
-      const width = proto.w * fit;
+      // Per axis, so squashing a block to fit a narrow island does not squash
+      // its height too and leave a row of stumps down the middle of the road.
+      const tallScale = rng.range(0.85, 1.15);
+      const acrossScale = Math.min(1, buildable / proto.d);
       const at = track.toWorld(s + width / 2, 0);
-      bv.set(at.x, at.y + (proto.h * fit) / 2 - 0.4, at.z);
-      bq.setFromAxisAngle(up, at.heading);
-      bs.set(fit, fit, fit);
+      bv.set(at.x, at.y + (proto.h * tallScale) / 2 - 0.4, at.z);
+      // Turned a quarter, so the block's LENGTH runs along the road.
+      //
+      // A box is built w x h x d, so its local X is `w` - but rotating it by
+      // the road's heading alone points local Z down the road, which laid every
+      // building across the carriageway like a sleeper. Everything else here
+      // reckons in `w` along and `d` across, so this is the rotation that makes
+      // the rest of the arithmetic true.
+      bq.setFromAxisAngle(up, at.heading + Math.PI / 2);
+      bs.set(alongScale, tallScale, acrossScale);
       buildingSlots[idx].push(bm.compose(bv, bq, bs).clone());
       s += width + rng.range(3, 9);
     }
@@ -577,36 +585,50 @@ export function buildScenery(
       while (s < seg.to) {
         const idx = rng.int(0, PROTOTYPES.length - 1);
         const proto = PROTOTYPES[idx];
-        const jitter = rng.range(0.85, 1.2);
-        const width = proto.w * jitter;
+        // Cut to a length that follows the bend rather than cutting across it.
+        // Height is left alone: a short building is a narrow one, not a stunted
+        // one, and a terrace of narrow houses around a corner is exactly right.
+        const curve = track.toWorld(s, 0).curvature;
+        const longest = maxChordLength(curve, FOLLOW_BOW);
+        const lengthScale = Math.max(0.35, Math.min(rng.range(0.85, 1.2), longest / proto.w));
+        const tallScale = rng.range(0.9, 1.15);
+        const width = proto.w * lengthScale;
         // Measured from the tarmac edge with the same constant the pavement
         // uses, so the two always meet instead of leaving a strip of grass.
+        // A constant setback, because the length above already keeps the ends
+        // on the building line. Pushing the row outward on bends instead made
+        // the street splay open exactly where a city should feel tightest.
         const setback = track.edgeAt(s) + CITY.buildingSetback
-          + rng.range(0, CITY.buildingJitter);
+          + rng.range(0, CITY.buildingJitter) + chordBow(width, curve);
         const at = track.toWorld(s + width / 2, sign * (setback + proto.d / 2));
-        bv.set(at.x, at.y + (proto.h * jitter) / 2 - 0.4, at.z);
-        bq.setFromAxisAngle(up, at.heading);
-        bs.set(jitter, jitter, jitter);
+        bv.set(at.x, at.y + (proto.h * tallScale) / 2 - 0.4, at.z);
+        // See the island block above: a quarter turn puts `w` along the road.
+        bq.setFromAxisAngle(up, at.heading + Math.PI / 2);
+        bs.set(lengthScale, tallScale, 1);
         buildingSlots[idx].push(bm.compose(bv, bq, bs).clone());
         s += width + rng.range(1.5, 6);
       }
     }
   }
 
+  // Nobody has the lights on at midday. The old drawn facades got away with
+  // it because their windows were painted on; a photographed building with
+  // glowing panes in full sun just looks broken.
+  const litChance = preset.key === 'duskrun' ? 0.34 : preset.key === 'goldenhour' ? 0.14 : 0;
+  const lightsAt = preset.key === 'duskrun' ? 0.72 : preset.key === 'goldenhour' ? 0.3 : 0;
+
   PROTOTYPES.forEach((proto, i) => {
     const slots = buildingSlots[i];
     if (!slots.length) return;
-    const tex = makeFacadeTexture({
-      floors: proto.floors,
-      bays: proto.bays,
-      wall: proto.wall,
-      trim: proto.trim,
-      litChance: preset.key === 'duskrun' ? 0.6 : 0.2,
-    });
-    // One tile across the width, one up the height.
-    tex.repeat.set(1, 1);
-    const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.88, metalness: 0.02 });
     const geo = new THREE.BoxGeometry(proto.w, proto.h, proto.d);
+    // Photographed fronts if they loaded, drawn ones if they did not. The
+    // drawn city is the fallback rather than the plan, but it is a working
+    // city, which is the whole point of having one.
+    const facade = facades.sets[proto.facade] ?? null;
+    const mat = facade
+      ? dressWithPhoto(geo, proto, facade, litChance, lightsAt, disposables)
+      : dressWithCanvas(proto, litChance, disposables);
+
     const mesh = new THREE.InstancedMesh(geo, mat, slots.length);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -614,7 +636,7 @@ export function buildScenery(
     mesh.instanceMatrix.needsUpdate = true;
     mesh.frustumCulled = false;
     instancedMeshes.push(mesh);
-    disposables.push(geo, mat, tex);
+    disposables.push(geo, mat);
   });
 
   // --------------------------------------------------------------- village
@@ -844,16 +866,136 @@ export function createPickupMesh(kind: PickupKind): PickupRig {
   };
 }
 
+/**
+ * A building wearing a photograph.
+ *
+ * The tiling is baked into the geometry's UVs rather than into the texture,
+ * because every prototype shares the one loaded texture and a repeat set on it
+ * would be a repeat set on all of them. Scaling the UVs lets each building
+ * carry its own number of storeys off the same image.
+ */
+function dressWithPhoto(
+  geo: THREE.BoxGeometry,
+  proto: { w: number; h: number; d: number; tint: number },
+  facade: FacadeSet,
+  litChance: number,
+  lightsAt: number,
+  disposables: { dispose(): void }[],
+): THREE.MeshStandardMaterial {
+  // Whole tiles only: half a tile cuts a row of windows in two at the corner.
+  // Height rounds up rather than to nearest, because too few storeys stretches
+  // a window into a letterbox, and nobody reads a tower as tall when its
+  // windows are four metres high.
+  const tilesX = Math.max(1, Math.round(proto.w / facade.tileWidth));
+  const tilesY = Math.max(1, Math.ceil(proto.h / facade.tileHeight));
+
+  const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
+  for (let k = 0; k < uv.count; k++) {
+    uv.setXY(k, uv.getX(k) * tilesX, uv.getY(k) * tilesY);
+  }
+  uv.needsUpdate = true;
+
+  // One set of lights for the whole building rather than one per tile, so the
+  // same few windows are not lit on every floor. It is wound back down by the
+  // repeat, which cancels the UV scaling above exactly. Skipped outright in
+  // daylight rather than drawn black - a texture nobody can see is still a
+  // texture the card has to hold.
+  let lights: THREE.CanvasTexture | null = null;
+  if (litChance > 0) {
+    lights = makeWindowLightsTexture({
+      cols: tilesX * facade.bays,
+      rows: tilesY * facade.floors,
+      litChance,
+    });
+    lights.repeat.set(1 / tilesX, 1 / tilesY);
+    disposables.push(lights);
+  }
+
+  const mat = new THREE.MeshStandardMaterial({
+    // Multiplies the photograph, so one image dresses several buildings.
+    color: new THREE.Color(proto.tint),
+    map: facade.map,
+    normalMap: facade.normalMap ?? undefined,
+    roughnessMap: facade.armMap ?? undefined,
+    roughness: 1,
+    metalness: 0,
+    emissive: new THREE.Color(0xffffff),
+    emissiveMap: lights ?? undefined,
+    // Held below 1 on purpose. The renderer tone maps with ACES, which pushes
+    // anything bright towards white - at full strength every lit window came
+    // out the same cold white and the warmth drawn into the map was thrown
+    // away. Backed off, the colour survives the curve.
+    emissiveIntensity: lightsAt,
+  });
+  return mat;
+}
+
+/** The drawn city: what gets built when the photographs are not there. */
+function dressWithCanvas(
+  proto: { floors: number; bays: number; wall: string; trim: string },
+  litChance: number,
+  disposables: { dispose(): void }[],
+): THREE.MeshStandardMaterial {
+  const tex = makeFacadeTexture({
+    floors: proto.floors,
+    bays: proto.bays,
+    wall: proto.wall,
+    trim: proto.trim,
+    // The drawn windows are their own light source, so they are lit harder.
+    litChance: litChance > 0.3 ? 0.6 : 0.2,
+  });
+  // One tile across the width, one up the height.
+  tex.repeat.set(1, 1);
+  disposables.push(tex);
+  return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.88, metalness: 0.02 });
+}
+
+/**
+ * How much of an island's leading end is left as bare kerb.
+ *
+ * A rider meeting a split head-on sees whatever stands on it dead ahead, and
+ * on a bend it stays dead ahead while the lane curves away - which reads as a
+ * wall across the road rather than as a fork to pick a side of. At 65 m/s this
+ * is a second and a half of open island before anything solid is on it, which
+ * is the time it takes to read the split and commit to a side.
+ */
+const ISLAND_NOSE_CLEAR = 95;
+
+/**
+ * How far a block's ends may stray from the curve it is lining, in metres.
+ *
+ * Small on purpose. This is what decides how short buildings get on a bend,
+ * and therefore whether a terrace reads as following the road or as a row of
+ * planks laid across it.
+ */
+const FOLLOW_BOW = 0.35;
+
 // ---------------------------------------------------------------- people
 export interface PedestrianRig {
   root: THREE.Group;
   body: THREE.Group;
+  /** Thighs and upper arms, pivoting at hip and shoulder. */
   legL: THREE.Mesh;
   legR: THREE.Mesh;
   armL: THREE.Mesh;
   armR: THREE.Mesh;
+  /** Lower halves, hung off the joint above them. */
+  shinL: THREE.Mesh;
+  shinR: THREE.Mesh;
+  forearmL: THREE.Mesh;
+  forearmR: THREE.Mesh;
+  /** Where this person is in their own stride. Theirs alone, and integrated. */
+  phase: number;
   dispose(): void;
 }
+
+/** Where the joints sit, measured up from the pavement. */
+const HIP_Y = 0.78;
+const THIGH = 0.42;
+const SHIN = 0.36;
+const SHOULDER_Y = 1.3;
+const UPPER_ARM = 0.28;
+const FOREARM = 0.24;
 
 const SKIN = [0xf0c9a0, 0xd9a878, 0xa9754f, 0x7a4f31, 0x5a3820] as const;
 
@@ -887,24 +1029,52 @@ export function createPedestrianMesh(colour: number, kind: string, seed = 0): Pe
   head.castShadow = true;
   body.add(head);
 
-  const legGeo = new THREE.BoxGeometry(0.15, 0.78, 0.17);
-  const legL = new THREE.Mesh(legGeo, trousers);
-  legL.position.set(-0.11, 0.39, 0);
+  // Legs in two pieces, each hung from the joint above it.
+  //
+  // The pivot is the whole point. A leg used to be one box positioned at its
+  // own centre, so swinging it rotated about knee height: the foot went
+  // forward and the top of the thigh went backwards through the hip. That is
+  // what made the crowd look like scissors rather than people. Translating
+  // the geometry up puts the origin at the joint, exactly as the arms below
+  // have always done.
+  const thighGeo = new THREE.BoxGeometry(0.15, THIGH, 0.17);
+  thighGeo.translate(0, -THIGH / 2, 0);
+  const legL = new THREE.Mesh(thighGeo, trousers);
+  legL.position.set(-0.11, HIP_Y, 0);
   legL.castShadow = true;
-  const legR = legL.clone();
+
+  const shinGeo = new THREE.BoxGeometry(0.14, SHIN, 0.16);
+  shinGeo.translate(0, -SHIN / 2, 0);
+  const shinL = new THREE.Mesh(shinGeo, trousers);
+  shinL.position.y = -THIGH;
+  shinL.castShadow = true;
+  legL.add(shinL);
+
+  const legR = legL.clone(true);
   legR.position.x = 0.11;
+  const shinR = legR.children[0] as THREE.Mesh;
   body.add(legL, legR);
 
-  const armGeo = new THREE.BoxGeometry(0.11, 0.5, 0.13);
-  const armL = new THREE.Mesh(armGeo, shirt);
+  const armGeo = new THREE.BoxGeometry(0.11, UPPER_ARM, 0.13);
   // Pivot at the shoulder so rotation swings the arm properly.
-  armL.geometry.translate(0, -0.25, 0);
-  armL.position.set(-0.27, 1.3, 0);
-  const armR = armL.clone();
+  armGeo.translate(0, -UPPER_ARM / 2, 0);
+  const armL = new THREE.Mesh(armGeo, shirt);
+  armL.position.set(-0.27, SHOULDER_Y, 0);
+
+  const forearmGeo = new THREE.BoxGeometry(0.10, FOREARM, 0.12);
+  forearmGeo.translate(0, -FOREARM / 2, 0);
+  const forearmL = new THREE.Mesh(forearmGeo, skin);
+  forearmL.position.y = -UPPER_ARM;
+  armL.add(forearmL);
+
+  const armR = armL.clone(true);
   armR.position.x = 0.27;
+  const forearmR = armR.children[0] as THREE.Mesh;
   body.add(armL, armR);
 
-  const geos: THREE.BufferGeometry[] = [torsoGeo, headGeo, legGeo, armGeo];
+  const geos: THREE.BufferGeometry[] = [
+    torsoGeo, headGeo, thighGeo, shinGeo, armGeo, forearmGeo,
+  ];
 
   // The start marshal waves a checkered flag.
   if (kind === 'marshal') {
@@ -934,6 +1104,11 @@ export function createPedestrianMesh(colour: number, kind: string, seed = 0): Pe
     legR,
     armL,
     armR,
+    shinL,
+    shinR,
+    forearmL,
+    forearmR,
+    phase: 0,
     dispose() {
       for (const g of geos) g.dispose();
       for (const m of materials) m.dispose();
@@ -964,7 +1139,11 @@ export function buildCrossings(
     polygonOffsetUnits: -6,
   });
 
-  const half = track.halfWidth;
+  // Deliberately not `track.halfWidth`: that is the width of ONE carriageway,
+  // and where the road splits it painted the crossing from -9 to +9 - which is
+  // the island, not the road. A crossing is laid over whatever tarmac is
+  // actually there, which on a divided street is two separate stretches of it.
+
   const geos: THREE.BufferGeometry[] = [];
   const postGeo = new THREE.BoxGeometry(0.13, 2.7, 0.13);
   const headGeo = new THREE.BoxGeometry(0.26, 0.6, 0.22);
@@ -974,15 +1153,29 @@ export function buildCrossings(
   });
 
   for (const crossing of crossings) {
-    const geo = ribbonGeometry(
+    // One ribbon per side. With no median the two meet on the centreline and
+    // read as a single crossing; with one they stop at the island's kerb and
+    // start again on its far side, which is what a crossing over a divided
+    // street looks like.
+    const sides: Band[][] = [
+      [
+        { lateral: (x: number) => -track.edgeAt(x), u: 0 },
+        { lateral: (x: number) => -track.medianAt(x), u: 1 },
+      ],
+      [
+        { lateral: (x: number) => track.medianAt(x), u: 0 },
+        { lateral: (x: number) => track.edgeAt(x), u: 1 },
+      ],
+    ];
+    const geo = mergeGeometries(sides.map((bands) => ribbonGeometry(
       track,
-      [{ lateral: -half, u: 0 }, { lateral: half, u: 1 }],
+      bands,
       3.2,
       () => 0.018,
       1.6,
       crossing.s,
-      crossing.s + 3.2,
-    );
+      crossing.s + CITY.crossingLength,
+    )));
     const stripes = new THREE.Mesh(geo, zebraMat);
     stripes.renderOrder = 2;
     group.add(stripes);
