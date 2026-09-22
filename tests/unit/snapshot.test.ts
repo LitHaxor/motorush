@@ -605,4 +605,59 @@ describe('a guest on a slow link is still smooth', () => {
     reconcileLocalRacer(them, racer(them.id, { s: 1010, speed: SPEED, state: 'ride' }), 1 / 60);
     expect(them.s).toBe(1010);
   });
+
+  it('holds our own crossing until the host has heard about it', () => {
+    // We cross the line a round trip before the host can possibly say so, and
+    // every frame in that gap still has us riding. Taking them un-finished us
+    // and threw the bike back behind the flag, again and again, at the one
+    // moment of a race nobody wants to see stutter.
+    const w = new World({ seed: 71 });
+    const me = w.localRacer;
+    me.state = 'finished';
+    me.finishTime = 90;
+    me.speed = SPEED;
+    me.s = 1000;
+
+    for (let i = 0; i < 12; i++) {
+      reconcileLocalRacer(me, racer(me.id, {
+        s: me.s - SPEED * RTT, speed: SPEED, state: 'ride', finishTime: null,
+      }), 1 / 60, { owned: true });
+    }
+    expect(me.state).toBe('finished');
+    expect(me.finishTime).toBe(90);
+    expect(me.s).toBe(1000);
+  });
+
+  it('takes the host\'s word once it arrives', () => {
+    const w = new World({ seed: 71 });
+    const me = w.localRacer;
+    me.state = 'finished';
+    me.finishTime = 90;
+    me.speed = SPEED;
+    me.s = 1000;
+    // The host's clock is the one the board is printed from, not our guess.
+    reconcileLocalRacer(me, racer(me.id, {
+      s: 998, speed: 0, state: 'finished', finishTime: 90.4,
+    }), 1 / 60, { owned: true });
+    expect(me.finishTime).toBe(90.4);
+    expect(me.s).toBe(998);
+  });
+
+  it('gives a predicted crossing up on a real disagreement', () => {
+    // We think we are home; the host has us three hundred metres short. That
+    // is not latency, and holding onto it would be holding onto a race that
+    // never ends.
+    const w = new World({ seed: 71 });
+    const me = w.localRacer;
+    me.state = 'finished';
+    me.finishTime = 90;
+    me.speed = SPEED;
+    me.s = 1000;
+    reconcileLocalRacer(me, racer(me.id, {
+      s: 700, speed: SPEED, state: 'ride', finishTime: null,
+    }), 1 / 60, { owned: true });
+    expect(me.state).toBe('ride');
+    expect(me.finishTime).toBeNull();
+    expect(me.s).toBe(700);
+  });
 });

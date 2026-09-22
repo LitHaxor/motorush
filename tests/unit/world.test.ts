@@ -3,7 +3,7 @@ import { World, COUNTDOWN_TIME } from '../../src/sim/world';
 import { knockDown } from '../../src/sim/racer';
 import { POLICE, DIFFICULTY, CRASH } from '../../src/sim/config';
 import { parkSpotBeside } from '../../src/sim/ai';
-import type { DifficultyKey, RacerInput, SimEvent } from '../../src/sim/types';
+import type { DifficultyKey, Racer, RacerInput, SimEvent } from '../../src/sim/types';
 
 const DT = 1 / 60;
 const INPUT = (over: Partial<RacerInput> = {}): RacerInput => ({
@@ -1199,5 +1199,108 @@ describe('World: a rider owns their own bike', () => {
     w.step(DT, INPUT({ throttle: 1 }), undefined, claims);
     // A claim about the rider on this screen is not somebody else's to make.
     expect(w.localRacer.s).toBeLessThan(before + 10);
+  });
+
+  /**
+   * Nobody owns the finish line.
+   *
+   * A believed rider is skipped by the integrator, and that is where the line
+   * is checked - so a guest rode over the flag and no machine anywhere ever
+   * said so. No time, no place, the grid held open waiting for them, and a
+   * rider left riding an empty road with no results screen coming.
+   */
+  describe('the line is still the host\'s', () => {
+    /** Walk a claimed rider up to and over the flag. Returns what was raised. */
+    function claimOverTheLine(w: World, them: Racer): SimEvent[] {
+      const events: SimEvent[] = [];
+      let guard = 0;
+      while (them.s < w.raceDistance + 2 && guard++ < 20000) {
+        const to = Math.min(them.s + 1, w.raceDistance + 2);
+        const claims = new Map([[them.id, claimAt(to, 0)]]);
+        const remote = new Map([[them.id, INPUT({ throttle: 1 })]]);
+        events.push(...w.step(DT, INPUT(), remote, claims));
+      }
+      return events;
+    }
+
+    it('calls a claimed rider home, on the host clock', () => {
+      const w = new World({ seed: 61 });
+      startRace(w);
+      const them = w.rivals[0];
+      const events = claimOverTheLine(w, them);
+
+      expect(them.state).toBe('finished');
+      expect(them.finishTime).toBeCloseTo(w.elapsed, 1);
+      expect(events.some((e) => e.type === 'finish' && e.racer === them)).toBe(true);
+      // Which is what puts a time on the board and lets the grid close.
+      expect(w.standingEntries().find((s) => s.name === them.name)!.time)
+        .toBe(them.finishTime);
+    });
+
+    it('stamps them once and does not un-stamp them', () => {
+      const w = new World({ seed: 61 });
+      startRace(w);
+      const them = w.rivals[0];
+      claimOverTheLine(w, them);
+      const called = them.finishTime;
+
+      // Their browser has not heard yet, so the frames still in flight say
+      // they are riding. Taking one wiped the finish out again.
+      let extra = 0;
+      for (let i = 0; i < 30; i++) {
+        const claims = new Map([[them.id, claimAt(them.s + 0.5, 0)]]);
+        const remote = new Map([[them.id, INPUT({ throttle: 1 })]]);
+        extra += w.step(DT, INPUT(), remote, claims)
+          .filter((e) => e.type === 'finish' && e.racer === them).length;
+      }
+      expect(them.state).toBe('finished');
+      expect(them.finishTime).toBe(called);
+      expect(extra).toBe(0);
+    });
+
+    it('does not hand out the flag to a rider who claims it', () => {
+      const w = new World({ seed: 61 });
+      startRace(w);
+      const them = w.rivals[0];
+      const claims = new Map([[them.id, {
+        ...claimAt(them.s + 0.5, 0), state: 'finished' as const,
+      }]]);
+      w.step(DT, INPUT(), new Map([[them.id, INPUT()]]), claims);
+      // Miles short of the line, so saying so changes nothing.
+      expect(them.state).toBe('ride');
+      expect(them.finishTime).toBeNull();
+    });
+
+    it('still calls a rider it is simulating itself', () => {
+      // The other half of the same job. A claim too far off to believe is
+      // refused, that bike goes back to being simulated here, and the line is
+      // reached by the integrator in the ordinary way - so the two paths a
+      // remote rider can take to the flag both end with a time against them.
+      const w = new World({ seed: 61 });
+      startRace(w);
+      const them = w.rivals[0];
+      them.s = w.raceDistance - 8;
+      them.speed = 60;
+
+      let guard = 0;
+      while (them.finishTime == null && guard++ < 600) {
+        // Their browser still has them back at the start, which is exactly the
+        // disagreement that takes the bike off them.
+        const claims = new Map([[them.id, claimAt(90, 0)]]);
+        w.step(DT, INPUT(), new Map([[them.id, INPUT()]]), claims);
+      }
+      expect(them.state).toBe('finished');
+      expect(them.finishTime).not.toBeNull();
+    });
+
+    it('lets the grid close once a claimed rider is home', () => {
+      const w = new World({ seed: 61 });
+      startRace(w);
+      const them = w.rivals[0];
+      claimOverTheLine(w, them);
+      // A rider with no time against their name reads as still out there, and
+      // held the whole field open behind them until the backstop ran out.
+      expect(w.racers.filter((r) => r.finishTime == null)).not.toContain(them);
+    });
   });
 });

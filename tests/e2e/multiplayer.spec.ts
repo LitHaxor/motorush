@@ -343,6 +343,78 @@ test.describe('an online match', () => {
     expect((await online(guest))?.seat).toBe(guestSeat);
   });
 
+  test('a guest rides over the line on its own bike and is called home', async ({ browser }) => {
+    // The case the test above does NOT cover, and the one riders actually hit.
+    //
+    // Above, the guest's bike is moved on the host, which puts the two copies
+    // kilometres apart - so the host refuses the guest's claims and simulates
+    // the bike itself, and the finish check is reached the ordinary way. When
+    // a rider genuinely rides to the flag the two agree, the host believes
+    // them, and a believed bike is skipped by the integrator - which is where
+    // the line was checked. Nobody called it. The guest rode on down a road
+    // that never ended, with no time, no place and no result, while the grid
+    // was held open behind a rider who was already home.
+    const host = await openRider(browser, 'HOST');
+    const guest = await openRider(browser, 'GUEST');
+
+    await host.click('#btn-quick');
+    await inLobby(host);
+    await guest.click('#btn-quick');
+    await inLobby(guest);
+    await host.click('#btn-launch');
+    await Promise.all([racing(host), racing(guest)]);
+
+    await guest.waitForFunction(() => (window.motorush!.online()?.buffered ?? 0) > 0, null, {
+      timeout: 30_000,
+    });
+
+    // The host takes the win, so the guest comes home behind somebody - which
+    // is how it was reported and the case where a rider is left waiting with
+    // the whole race already over around them.
+    await host.evaluate(() => {
+      const w = window.motorush!.world()!;
+      w.localRacer.s = w.raceDistance - 8;
+      w.localRacer.speed = 60;
+    });
+    await expect(host.locator('#screen-finish')).toBeVisible({ timeout: 45_000 });
+
+    // Now bring the guest up to the flag on BOTH machines, so the two copies
+    // agree and the host goes on believing what the guest tells it. Left a
+    // good run short of the line: the metres between here and the flag are
+    // ridden by the guest, claimed frame by frame, and called by the host.
+    const guestSeat = (await online(guest))!.seat;
+    const RUN_UP = 60;
+    await Promise.all([
+      host.evaluate(([seat, runUp]) => {
+        const w = window.motorush!.world()!;
+        const them = w.racers.find((r) => r.id === seat)!;
+        them.s = w.raceDistance - runUp;
+        them.speed = 60;
+      }, [guestSeat, RUN_UP] as const),
+      guest.evaluate((runUp) => {
+        const w = window.motorush!.world()!;
+        w.localRacer.s = w.raceDistance - runUp;
+        w.localRacer.speed = 60;
+      }, RUN_UP),
+    ]);
+    await guest.keyboard.down('KeyW');
+
+    // Their own result, with a time on it and the place they actually took.
+    await expect(guest.locator('#screen-finish')).toBeVisible({ timeout: 45_000 });
+    await expect(guest.locator('#finish-stamp')).toHaveText('2ND');
+    await expect(guest.locator('#finish-results li.is-player .time')).toHaveText(/\d:\d\d/);
+    await guest.keyboard.up('KeyW');
+
+    // And the host has them down as home, on the host's own clock - without
+    // which the grid stays open behind a rider who is standing at the flag.
+    const called = await host.evaluate((seat) => {
+      const them = window.motorush!.world()!.racers.find((r) => r.id === seat)!;
+      return { state: them.state, finishTime: them.finishTime };
+    }, guestSeat);
+    expect(called.state).toBe('finished');
+    expect(called.finishTime).not.toBeNull();
+  });
+
   test('the host crossing the line does not take the road away from anyone', async ({ browser }) => {
     const host = await openRider(browser, 'HOST');
     const guest = await openRider(browser, 'GUEST');

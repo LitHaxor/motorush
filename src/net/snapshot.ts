@@ -260,6 +260,23 @@ export function reconcileLocalRacer(
 ): void {
   const { snapMetres = 6, rate = 6, owned = false } = options;
 
+  // Our own crossing, a round trip ahead of the host's word for it.
+  //
+  // The host stamps the line - it owns the clock the board is printed from -
+  // but it cannot have seen us cross until the claim we sent has got there and
+  // a snapshot has come back. Every frame in that gap still says `ride`, and
+  // taking them un-finished us and yanked the bike back behind the flag, over
+  // and over, at the one moment of the race nobody wants to see stutter.
+  //
+  // Held rather than obeyed, and only while the host is merely lagging: a
+  // disagreement bigger than that is a desync, and then the host wins as it
+  // does everywhere else.
+  if (owned && racer.state === 'finished' && snapshot.state === 'ride') {
+    if (Math.abs(snapshot.s - racer.s) <= Math.max(snapMetres, racer.speed * OWNED_LAG_SECONDS)) {
+      return;
+    }
+  }
+
   // The host owns everything that is not our own motion.
   racer.health = snapshot.health;
   racer.place = snapshot.place;

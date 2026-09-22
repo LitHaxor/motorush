@@ -664,6 +664,13 @@ export class World implements AiWorldView {
     const r = this.racers.find((x) => x.id === racerId);
     if (!r) return false;
 
+    // A rider owns their bike while they are riding it. Once this race has
+    // been called - they crossed the line, or the law took them off it - the
+    // verdict is the host's and no claim may undo it. Their own browser has
+    // not heard yet, so the frames still in flight all say `ride`, and taking
+    // them wiped the finish out again the tick after it was stamped.
+    if (r.finishTime != null || r.state === 'busted') return false;
+
     // Nothing about a claim may be a number that is not one.
     if (![claim.s, claim.lateral, claim.speed, claim.lean].every(Number.isFinite)) return false;
 
@@ -681,9 +688,33 @@ export class World implements AiWorldView {
     r.lateral = claim.lateral;
     r.speed = claim.speed;
     r.lean = claim.lean;
-    r.state = claim.state;
+    // How they are riding is theirs to say; how their race ended is not. A
+    // finish and an arrest are verdicts, and verdicts are the host's - a rider
+    // predicting their own crossing sends `finished` a round trip before we
+    // have called it, and taking that would both hand out the flag on request
+    // and leave the rider stamped with no time against their name.
+    if (claim.state === 'ride' || claim.state === 'down') r.state = claim.state;
     r.riderPhase = claim.riderPhase;
     return true;
+  }
+
+  /**
+   * Call the line for a bike this machine is not integrating.
+   *
+   * The finish check lives in `stepRacer`, and a rider whose claim we believe
+   * is skipped by the integrator - so a guest could ride over the flag and
+   * nobody, on any machine, would ever say so. Their race simply never ended:
+   * no time, no place, the grid held open waiting for them, and a rider left
+   * riding an empty road with no results screen coming.
+   *
+   * Stamped here instead, on the host's clock, because that is the clock the
+   * board is printed from and the one everybody in the room agrees on.
+   */
+  private stampFinish(r: Racer, events: SimEvent[]): void {
+    if (!isRiding(r) || r.finishTime != null || r.s < this.raceDistance) return;
+    r.state = 'finished';
+    r.finishTime = this.elapsed;
+    events.push({ type: 'finish', racer: r });
   }
 
   /** Queue a player attack. Returns true if the swing started. */
@@ -811,7 +842,11 @@ export class World implements AiWorldView {
     if (remoteClaims) {
       for (const [id, claim] of remoteClaims) {
         if (id === this.localRacer.id) continue;
-        if (this.acceptClaim(id, claim, dt)) believed.add(id);
+        if (!this.acceptClaim(id, claim, dt)) continue;
+        believed.add(id);
+        // A rider may own their bike, but nobody owns the finish line.
+        const r = this.racers.find((x) => x.id === id);
+        if (r) this.stampFinish(r, events);
       }
     }
 
